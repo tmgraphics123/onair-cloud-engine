@@ -70,8 +70,14 @@ jobs:
           sleep 2
 
           # 3. Launch Google Chrome in Fullscreen Kiosk Mode pointing to Live Output Feed
+          mkdir -p /tmp/chrome-prof
+          touch "/tmp/chrome-prof/First Run"
           google-chrome \
             --no-sandbox \
+            --no-first-run \
+            --no-default-browser-check \
+            --disable-search-engine-choice-screen \
+            --user-data-dir=/tmp/chrome-prof \
             --disable-gpu \
             --autoplay-policy=no-user-gesture-required \
             --window-size=1280,720 \
@@ -80,7 +86,7 @@ jobs:
             --hide-scrollbars \
             --disable-infobars \
             --disable-notifications \
-            "$FEED_URL" &
+            --app="$FEED_URL" &
           
           echo "Waiting 8 seconds for Output Feed & Tickers to render..."
           sleep 8
