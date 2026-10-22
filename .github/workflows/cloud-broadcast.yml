@@ -55,12 +55,13 @@ jobs:
           fi
 
           mkdir -p /tmp/media_cache
-          # Pre-cache active uploads to local NVMe SSD
-          curl -sL "https://24.onairplayout.com/uploads/BAHAAR_-The_Spirit_Of_Kashmir__Cover__By_Adnan_Manzoor_-_Qalaam_Studio.mp4" -o "/tmp/media_cache/BAHAAR_-The_Spirit_Of_Kashmir__Cover__By_Adnan_Manzoor_-_Qalaam_Studio.mp4" &
-          curl -sL "https://24.onairplayout.com/uploads/USP_MULTAN_15_Anniversary.mp4" -o "/tmp/media_cache/USP_MULTAN_15_Anniversary.mp4" &
-          curl -sL "https://24.onairplayout.com/uploads/yt_cAd8cvqRi9g.mp4" -o "/tmp/media_cache/yt_cAd8cvqRi9g.mp4" &
-          curl -sL "https://24.onairplayout.com/uploads/yt_P4zyZAl30To.mp4" -o "/tmp/media_cache/yt_P4zyZAl30To.mp4" &
-          DEFAULT_HF_VIDEO="https://24.onairplayout.com/uploads/Elite_Force_2026_S01E01_720p_HD.mp4"
+          CB_TS=$(date +%s)
+          # Pre-cache active uploads to local NVMe SSD using .tmp + cache-buster so Cloudflare Edge never serves stale cached files
+          (curl -sL "https://24.onairplayout.com/uploads/BAHAAR_-The_Spirit_Of_Kashmir__Cover__By_Adnan_Manzoor_-_Qalaam_Studio.mp4?_v=${CB_TS}" -o "/tmp/media_cache/bahaar.tmp" && mv "/tmp/media_cache/bahaar.tmp" "/tmp/media_cache/BAHAAR_-The_Spirit_Of_Kashmir__Cover__By_Adnan_Manzoor_-_Qalaam_Studio.mp4") &
+          (curl -sL "https://24.onairplayout.com/uploads/USP_MULTAN_15_Anniversary.mp4?_v=${CB_TS}" -o "/tmp/media_cache/usp.tmp" && mv "/tmp/media_cache/usp.tmp" "/tmp/media_cache/USP_MULTAN_15_Anniversary.mp4") &
+          (curl -sL "https://24.onairplayout.com/uploads/yt_cAd8cvqRi9g.mp4?_v=${CB_TS}" -o "/tmp/media_cache/yt1.tmp" && mv "/tmp/media_cache/yt1.tmp" "/tmp/media_cache/yt_cAd8cvqRi9g.mp4") &
+          (curl -sL "https://24.onairplayout.com/uploads/yt_P4zyZAl30To.mp4?_v=${CB_TS}" -o "/tmp/media_cache/yt2.tmp" && mv "/tmp/media_cache/yt2.tmp" "/tmp/media_cache/yt_P4zyZAl30To.mp4") &
+          DEFAULT_HF_VIDEO="https://24.onairplayout.com/uploads/Elite_Force_2026_S01E01_720p_HD.mp4?_v=${CB_TS}"
           (
             curl -sL "$DEFAULT_HF_VIDEO" -o "/tmp/media_cache/elite_force.mp4.tmp" && mv "/tmp/media_cache/elite_force.mp4.tmp" "/tmp/media_cache/Elite_Force_2026_S01E01_720p_HD.mp4"
           ) &
@@ -176,16 +177,20 @@ jobs:
             fi
 
             if echo "$PATH_URL" | grep -q "^/uploads/"; then
-              REMOTE_URL="https://24.onairplayout.com${PATH_URL}"
+              REMOTE_URL="https://24.onairplayout.com${PATH_URL}?_v=$(date +%s)"
             elif [ -n "$HF_URL" ] && [ "$HF_URL" != "null" ] && ! echo "$HF_URL" | grep -q "huggingface.co/buckets/"; then
-              REMOTE_URL="$HF_URL"
+              if echo "$HF_URL" | grep -q "?"; then
+                REMOTE_URL="${HF_URL}&_v=$(date +%s)"
+              else
+                REMOTE_URL="${HF_URL}?_v=$(date +%s)"
+              fi
             elif echo "$VIDEO_NAME" | grep -qi "Elite"; then
-              REMOTE_URL="https://24.onairplayout.com/uploads/Elite_Force_2026_S01E01_720p_HD.mp4"
+              REMOTE_URL="https://24.onairplayout.com/uploads/Elite_Force_2026_S01E01_720p_HD.mp4?_v=$(date +%s)"
             elif [ -n "$PATH_URL" ] && [ "$PATH_URL" != "null" ]; then
               if echo "$PATH_URL" | grep -q "^http"; then
                 REMOTE_URL="$PATH_URL"
               else
-                REMOTE_URL="https://24.onairplayout.com${PATH_URL}"
+                REMOTE_URL="https://24.onairplayout.com${PATH_URL}?_v=$(date +%s)"
               fi
             else
               REMOTE_URL="$DEFAULT_HF_VIDEO"
