@@ -57,11 +57,11 @@ jobs:
           mkdir -p /tmp/media_cache
           CB_TS=$(date +%s)
           # Pre-cache active uploads to local NVMe SSD using .tmp + cache-buster so Cloudflare Edge never serves stale cached files
-          (curl -sL "https://24.onairplayout.com/uploads/BAHAAR_-The_Spirit_Of_Kashmir__Cover__By_Adnan_Manzoor_-_Qalaam_Studio.mp4?_v=${CB_TS}" -o "/tmp/media_cache/bahaar.tmp" && mv "/tmp/media_cache/bahaar.tmp" "/tmp/media_cache/BAHAAR_-The_Spirit_Of_Kashmir__Cover__By_Adnan_Manzoor_-_Qalaam_Studio.mp4") &
-          (curl -sL "https://24.onairplayout.com/uploads/USP_MULTAN_15_Anniversary.mp4?_v=${CB_TS}" -o "/tmp/media_cache/usp.tmp" && mv "/tmp/media_cache/usp.tmp" "/tmp/media_cache/USP_MULTAN_15_Anniversary.mp4") &
-          (curl -sL "https://24.onairplayout.com/uploads/yt_cAd8cvqRi9g.mp4?_v=${CB_TS}" -o "/tmp/media_cache/yt1.tmp" && mv "/tmp/media_cache/yt1.tmp" "/tmp/media_cache/yt_cAd8cvqRi9g.mp4") &
-          (curl -sL "https://24.onairplayout.com/uploads/yt_P4zyZAl30To.mp4?_v=${CB_TS}" -o "/tmp/media_cache/yt2.tmp" && mv "/tmp/media_cache/yt2.tmp" "/tmp/media_cache/yt_P4zyZAl30To.mp4") &
-          DEFAULT_HF_VIDEO="https://24.onairplayout.com/uploads/Elite_Force_2026_S01E01_720p_HD.mp4?_v=${CB_TS}"
+          (curl -sL "https://24.onairplayout.com/uploads/BAHAAR_-The_Spirit_Of_Kashmir__Cover__By_Adnan_Manzoor_-_Qalaam_Studio.mp4" -o "/tmp/media_cache/bahaar.tmp" && mv "/tmp/media_cache/bahaar.tmp" "/tmp/media_cache/BAHAAR_-The_Spirit_Of_Kashmir__Cover__By_Adnan_Manzoor_-_Qalaam_Studio.mp4") &
+          (curl -sL "https://24.onairplayout.com/uploads/USP_MULTAN_15_Anniversary.mp4" -o "/tmp/media_cache/usp.tmp" && mv "/tmp/media_cache/usp.tmp" "/tmp/media_cache/USP_MULTAN_15_Anniversary.mp4") &
+          (curl -sL "https://24.onairplayout.com/uploads/yt_cAd8cvqRi9g.mp4" -o "/tmp/media_cache/yt1.tmp" && mv "/tmp/media_cache/yt1.tmp" "/tmp/media_cache/yt_cAd8cvqRi9g.mp4") &
+          (curl -sL "https://24.onairplayout.com/uploads/yt_P4zyZAl30To.mp4" -o "/tmp/media_cache/yt2.tmp" && mv "/tmp/media_cache/yt2.tmp" "/tmp/media_cache/yt_P4zyZAl30To.mp4") &
+          DEFAULT_HF_VIDEO="https://24.onairplayout.com/uploads/Elite_Force_2026_S01E01_720p_HD.mp4"
           (
             curl -sL "$DEFAULT_HF_VIDEO" -o "/tmp/media_cache/elite_force.mp4.tmp" && mv "/tmp/media_cache/elite_force.mp4.tmp" "/tmp/media_cache/Elite_Force_2026_S01E01_720p_HD.mp4"
           ) &
@@ -177,20 +177,20 @@ jobs:
             fi
 
             if echo "$PATH_URL" | grep -q "^/uploads/"; then
-              REMOTE_URL="https://24.onairplayout.com${PATH_URL}?_v=$(date +%s)"
+              REMOTE_URL="https://24.onairplayout.com${PATH_URL}"
             elif [ -n "$HF_URL" ] && [ "$HF_URL" != "null" ] && ! echo "$HF_URL" | grep -q "huggingface.co/buckets/"; then
               if echo "$HF_URL" | grep -q "?"; then
-                REMOTE_URL="${HF_URL}&_v=$(date +%s)"
+                REMOTE_URL="${HF_URL}"
               else
-                REMOTE_URL="${HF_URL}?_v=$(date +%s)"
+                REMOTE_URL="${HF_URL}"
               fi
             elif echo "$VIDEO_NAME" | grep -qi "Elite"; then
-              REMOTE_URL="https://24.onairplayout.com/uploads/Elite_Force_2026_S01E01_720p_HD.mp4?_v=$(date +%s)"
+              REMOTE_URL="https://24.onairplayout.com/uploads/Elite_Force_2026_S01E01_720p_HD.mp4"
             elif [ -n "$PATH_URL" ] && [ "$PATH_URL" != "null" ]; then
               if echo "$PATH_URL" | grep -q "^http"; then
                 REMOTE_URL="$PATH_URL"
               else
-                REMOTE_URL="https://24.onairplayout.com${PATH_URL}?_v=$(date +%s)"
+                REMOTE_URL="https://24.onairplayout.com${PATH_URL}"
               fi
             else
               REMOTE_URL="$DEFAULT_HF_VIDEO"
@@ -231,7 +231,7 @@ jobs:
             # 2) Pre-caches any newly added YouTube video BEFORE switching FFmpeg so /watch/live_nadeem never stalls!
             (
               HLS_FAIL_COUNT=0
-              while kill -0 $ 2>/dev/null; do
+              while kill -0 $$ 2>/dev/null; do
                 sleep 2
                 NOW_TS=$(date +%s)
                 ELAPSED=$(( NOW_TS - FF_START_TS ))
@@ -305,7 +305,7 @@ jobs:
                 if [ -n "$TEE_STR" ]; then TEE_STR="${TEE_STR}|"; fi
                 TEE_STR="${TEE_STR}[f=flv:onfail=ignore]${u}"
               done
-              ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts -rw_timeout 10000000 \
+              ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts \
                 $LOOP_ARGS -re -ss "$TIMECODE" -i "$INPUT_SOURCE" \
                 -thread_queue_size 1024 -f x11grab -draw_mouse 0 -framerate "$ENC_FPS" -video_size 1280x720 -i :99.0 \
                 -t "$REMAINING" \
@@ -316,7 +316,7 @@ jobs:
                 -c:a aac -ac 2 -b:a "${ENC_ABITRATE}k" -ar 44100 \
                 -flags +global_header -f tee "$TEE_STR" || true
             else
-              ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts -rw_timeout 10000000 \
+              ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts \
                 $LOOP_ARGS -re -ss "$TIMECODE" -i "$INPUT_SOURCE" \
                 -thread_queue_size 1024 -f x11grab -draw_mouse 0 -framerate "$ENC_FPS" -video_size 1280x720 -i :99.0 \
                 -t "$REMAINING" \
@@ -325,7 +325,7 @@ jobs:
                 -af "aresample=async=1:first_pts=0" \
                 -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v "${ENC_VBITRATE}k" -maxrate "${ENC_MAXRATE}k" -bufsize "${ENC_BUFSIZE}k" -g "$ENC_GOP" -keyint_min "$ENC_GOP" -sc_threshold 0 \
                 -c:a aac -ac 2 -b:a "${ENC_ABITRATE}k" -ar 44100 \
-                -rw_timeout 10000000 -f flv "$ACTIVE_RTMP" || true
+                -rw_timeout 15000000 -f flv "$ACTIVE_RTMP" || true
             fi
 
             kill $WATCHER_PID 2>/dev/null || true
