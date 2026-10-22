@@ -26,21 +26,12 @@ jobs:
       - name: Checkout Engine
         uses: actions/checkout@v4
 
-      - name: Install FFmpeg, yt-dlp + EJS, Cloudflare WARP, Virtual Display & Audio
+      - name: Install FFmpeg, yt-dlp, Virtual Display & Audio
         run: |
           sudo ln -snf /usr/share/zoneinfo/Asia/Karachi /etc/localtime && echo "Asia/Karachi" | sudo tee /etc/timezone
-          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg || true
-          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list || true
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg xvfb pulseaudio jq curl python3 python3-pip fonts-noto-core fonts-noto-color-emoji fonts-hosny-amiri cloudflare-warp || true
-          python3 -m pip install -q -U "yt-dlp[default]" || sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
-          export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
-          if command -v warp-cli >/dev/null 2>&1; then
-            warp-cli --accept-tos registration new || true
-            warp-cli --accept-tos mode proxy || true
-            warp-cli --accept-tos proxy port 40000 || true
-            warp-cli --accept-tos connect || true
-          fi
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg xvfb pulseaudio jq curl fonts-noto-core fonts-noto-color-emoji fonts-hosny-amiri || true
+          sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && sudo chmod a+rx /usr/local/bin/yt-dlp || true
 
       - name: Launch 24/7 Headless Broadcast Studio (Local NVMe SSD + YouTube Bot-Bypass + Dynamic Encoder Settings)
         env:
