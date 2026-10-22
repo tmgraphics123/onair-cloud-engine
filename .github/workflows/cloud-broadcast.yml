@@ -26,12 +26,13 @@ jobs:
       - name: Checkout Engine
         uses: actions/checkout@v4
 
-      - name: Configure Timezone, Xvfb, Urdu Fonts & yt-dlp (Fast Setup)
+      - name: Configure Timezone, FFmpeg, Xvfb, Urdu Fonts & yt-dlp (Fast Setup)
         run: |
+          set +e
           sudo ln -snf /usr/share/zoneinfo/Asia/Karachi /etc/localtime && echo "Asia/Karachi" | sudo tee /etc/timezone
-          if ! command -v Xvfb >/dev/null 2>&1; then
+          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v Xvfb >/dev/null 2>&1; then
             sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq || true
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends xvfb xauth || true
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ffmpeg xvfb xauth ca-certificates || true
           fi
           mkdir -p ~/.local/share/fonts
           curl -sL "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf" -o ~/.local/share/fonts/Amiri-Bold.ttf || true
@@ -46,6 +47,7 @@ jobs:
           RTMP_URL: ${{ inputs.rtmp_url || 'rtmp://rtmp.onairplayout.com:1935/live/live_nadeem' }}
           DURATION_SEC: ${{ inputs.duration_sec || '20700' }}
         run: |
+          set +e
           export TZ=Asia/Karachi
           export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
           if ! echo "$FEED_URL" | grep -q "overlay_only=1"; then
@@ -53,13 +55,14 @@ jobs:
           fi
 
           mkdir -p /tmp/media_cache
-          # Pre-cache USP_MULTAN, yt_cAd8cvqRi9g.mp4, and yt_P4zyZAl30To.mp4 to local NVMe SSD
+          # Pre-cache active uploads to local NVMe SSD
+          curl -sL "https://24.onairplayout.com/uploads/BAHAAR_-The_Spirit_Of_Kashmir__Cover__By_Adnan_Manzoor_-_Qalaam_Studio.mp4" -o "/tmp/media_cache/BAHAAR_-The_Spirit_Of_Kashmir__Cover__By_Adnan_Manzoor_-_Qalaam_Studio.mp4" &
           curl -sL "https://24.onairplayout.com/uploads/USP_MULTAN_15_Anniversary.mp4" -o "/tmp/media_cache/USP_MULTAN_15_Anniversary.mp4" &
           curl -sL "https://24.onairplayout.com/uploads/yt_cAd8cvqRi9g.mp4" -o "/tmp/media_cache/yt_cAd8cvqRi9g.mp4" &
           curl -sL "https://24.onairplayout.com/uploads/yt_P4zyZAl30To.mp4" -o "/tmp/media_cache/yt_P4zyZAl30To.mp4" &
-          DEFAULT_HF_VIDEO="https://huggingface.co/buckets/Onairplayout/playout-media/resolve/SSRmovies.COM%20-%20Elite%20Force%202026%20S01E01%20NF%20Dual%20Audio%20Hindi%20(ORG%205.1)%20720p%20WEB-DL%20x264%20Multi%20Subs.mkv"
+          DEFAULT_HF_VIDEO="https://24.onairplayout.com/uploads/Elite_Force_2026_S01E01_720p_HD.mp4"
           (
-            curl -sL "$DEFAULT_HF_VIDEO" -o "/tmp/media_cache/elite_force.mkv.tmp" && mv "/tmp/media_cache/elite_force.mkv.tmp" "/tmp/media_cache/Elite_Force_2026_S01E01_720p_HD.mp4"
+            curl -sL "$DEFAULT_HF_VIDEO" -o "/tmp/media_cache/elite_force.mp4.tmp" && mv "/tmp/media_cache/elite_force.mp4.tmp" "/tmp/media_cache/Elite_Force_2026_S01E01_720p_HD.mp4"
           ) &
 
           # 1. Start PulseAudio virtual speaker
@@ -101,36 +104,37 @@ jobs:
             if [ $REMAINING -le 5 ]; then break; fi
 
             # Check stream status & operator Encoder Config from 24.onairplayout.com/api/stream/status
-            STREAM_CTRL=$(curl -s "https://24.onairplayout.com/api/stream/status" || echo '{"active":true}')
-            IS_ACTIVE=$(echo "$STREAM_CTRL" | jq -r '.active // true')
+            STREAM_CTRL=$(curl -s "https://24.onairplayout.com/api/stream/status" 2>/dev/null || echo '{"active":true}')
+            IS_ACTIVE=$(echo "$STREAM_CTRL" | jq -r '.active // true' 2>/dev/null || echo "true")
             if [ "$IS_ACTIVE" = "false" ]; then
               sleep 2
               continue
             fi
 
-            ENC_FPS=$(echo "$STREAM_CTRL" | jq -r '.encoderConfig.fps // 30' | awk '{print int($1)}')
+            ENC_FPS=$(echo "$STREAM_CTRL" | jq -r '.encoderConfig.fps // 30' 2>/dev/null | awk '{print int($1)}')
             if [ -z "$ENC_FPS" ] || [ "$ENC_FPS" -lt 15 ] || [ "$ENC_FPS" -gt 60 ]; then ENC_FPS=30; fi
             ENC_GOP=$(( ENC_FPS * 2 ))
 
-            ENC_VBITRATE=$(echo "$STREAM_CTRL" | jq -r '.encoderConfig.videoBitrate // 2500' | awk '{print int($1)}')
+            ENC_VBITRATE=$(echo "$STREAM_CTRL" | jq -r '.encoderConfig.videoBitrate // 2500' 2>/dev/null | awk '{print int($1)}')
             if [ -z "$ENC_VBITRATE" ] || [ "$ENC_VBITRATE" -lt 800 ]; then ENC_VBITRATE=2500; fi
             ENC_MAXRATE=$(( ENC_VBITRATE + 300 ))
             ENC_BUFSIZE=$(( ENC_VBITRATE * 2 ))
 
-            ENC_ABITRATE=$(echo "$STREAM_CTRL" | jq -r '.encoderConfig.audioBitrate // 128' | awk '{print int($1)}')
+            ENC_ABITRATE=$(echo "$STREAM_CTRL" | jq -r '.encoderConfig.audioBitrate // 128' 2>/dev/null | awk '{print int($1)}')
             if [ -z "$ENC_ABITRATE" ] || [ "$ENC_ABITRATE" -lt 64 ]; then ENC_ABITRATE=128; fi
 
-            CFG_RTMP=$(echo "$STREAM_CTRL" | jq -r '.encoderConfig.rtmpUrl // empty')
+            CFG_RTMP=$(echo "$STREAM_CTRL" | jq -r '.encoderConfig.rtmpUrl // empty' 2>/dev/null || echo "")
             ACTIVE_RTMP="${CFG_RTMP:-$RTMP_URL}"
 
             # Query current program state from 24.onairplayout.com
-            STATE_JSON=$(curl -s "https://24.onairplayout.com/api/program/state?uid=op_1790161020557" || echo "{}")
-            VIDEO_NAME=$(echo "$STATE_JSON" | jq -r '.programItem.name // "Elite_Force_2026_S01E01_720p_HD.mp4"')
-            HF_URL=$(echo "$STATE_JSON" | jq -r '.programItem.hfResolveUrl // empty')
-            PATH_URL=$(echo "$STATE_JSON" | jq -r '.programItem.path // empty')
-            DURATION_VAL=$(echo "$STATE_JSON" | jq -r '.programItem.duration // 1919' | awk '{print int($1)}')
+            STATE_JSON=$(curl -s "https://24.onairplayout.com/api/program/state?uid=op_1790161020557" 2>/dev/null || echo "{}")
+            VIDEO_NAME=$(echo "$STATE_JSON" | jq -r '.programItem.name // "Elite_Force_2026_S01E01_720p_HD.mp4"' 2>/dev/null || echo "Elite_Force_2026_S01E01_720p_HD.mp4")
+            if [ -z "$VIDEO_NAME" ] || [ "$VIDEO_NAME" = "null" ]; then VIDEO_NAME="Elite_Force_2026_S01E01_720p_HD.mp4"; fi
+            HF_URL=$(echo "$STATE_JSON" | jq -r '.programItem.hfResolveUrl // empty' 2>/dev/null || echo "")
+            PATH_URL=$(echo "$STATE_JSON" | jq -r '.programItem.path // empty' 2>/dev/null || echo "")
+            DURATION_VAL=$(echo "$STATE_JSON" | jq -r '.programItem.duration // 1919' 2>/dev/null | awk '{print int($1)}')
             if [ -z "$DURATION_VAL" ] || [ "$DURATION_VAL" -le 5 ]; then DURATION_VAL=1919; fi
-            TIMECODE=$(echo "$STATE_JSON" | jq -r '.timecode // 0' | awk '{print int($1)}')
+            TIMECODE=$(echo "$STATE_JSON" | jq -r '.timecode // 0' 2>/dev/null | awk '{print int($1)}')
             if [ -z "$TIMECODE" ] || [ "$TIMECODE" -lt 0 ]; then
               TIMECODE=0
             fi
@@ -171,10 +175,12 @@ jobs:
               CACHE_FILE="/tmp/media_cache/${SAFE_CACHE_NAME}"
             fi
 
-            if [ -n "$HF_URL" ] && [ "$HF_URL" != "null" ]; then
+            if echo "$PATH_URL" | grep -q "^/uploads/"; then
+              REMOTE_URL="https://24.onairplayout.com${PATH_URL}"
+            elif [ -n "$HF_URL" ] && [ "$HF_URL" != "null" ] && ! echo "$HF_URL" | grep -q "huggingface.co/buckets/"; then
               REMOTE_URL="$HF_URL"
             elif echo "$VIDEO_NAME" | grep -qi "Elite"; then
-              REMOTE_URL="$DEFAULT_HF_VIDEO"
+              REMOTE_URL="https://24.onairplayout.com/uploads/Elite_Force_2026_S01E01_720p_HD.mp4"
             elif [ -n "$PATH_URL" ] && [ "$PATH_URL" != "null" ]; then
               if echo "$PATH_URL" | grep -q "^http"; then
                 REMOTE_URL="$PATH_URL"
@@ -232,17 +238,19 @@ jobs:
                   -H "Content-Type: application/json" \
                   -d "{\"uid\":\"op_1790161020557\",\"timecode\":$LIVE_TC,\"fromWorker\":true}" >/dev/null 2>&1 || true
 
-                CTRL_NOW=$(curl -s "https://24.onairplayout.com/api/stream/status" || echo '{"active":true}')
-                ACT_NOW=$(echo "$CTRL_NOW" | jq -r '.active // true')
+                CTRL_NOW=$(curl -s "https://24.onairplayout.com/api/stream/status" 2>/dev/null || echo '{"active":true}')
+                ACT_NOW=$(echo "$CTRL_NOW" | jq -r '.active // true' 2>/dev/null || echo "true")
                 if [ "$ACT_NOW" = "false" ]; then
                   pkill -f "ffmpeg -hide_banner" || true
                   break
                 fi
-                ST_NOW=$(curl -s "https://24.onairplayout.com/api/program/state?uid=op_1790161020557" || echo "{}")
-                NAME_NOW=$(echo "$ST_NOW" | jq -r '.programItem.name // empty')
-                PATH_NOW=$(echo "$ST_NOW" | jq -r '.programItem.path // empty')
+                ST_NOW=$(curl -s "https://24.onairplayout.com/api/program/state?uid=op_1790161020557" 2>/dev/null || echo "{}")
+                NAME_NOW=$(echo "$ST_NOW" | jq -r '.programItem.name // empty' 2>/dev/null || echo "")
+                PATH_NOW=$(echo "$ST_NOW" | jq -r '.programItem.path // empty' 2>/dev/null || echo "")
                 if [ -n "$NAME_NOW" ] && [ "$NAME_NOW" != "null" ]; then
-                  if [ "$NAME_NOW" != "$VIDEO_NAME" ] || ( [ -n "$PATH_NOW" ] && [ "$PATH_NOW" != "null" ] && [ "$PATH_NOW" != "$PATH_URL" ] ); then
+                  SAFE_NOW=$(echo "$NAME_NOW" | sed 's/[^a-zA-Z0-9._-]/_/g')
+                  SAFE_CUR=$(echo "$VIDEO_NAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
+                  if [ "$SAFE_NOW" != "$SAFE_CUR" ] || ( [ -n "$PATH_NOW" ] && [ "$PATH_NOW" != "null" ] && [ "$PATH_NOW" != "$PATH_URL" ] ); then
                     # If the new item is an uncached YouTube video, pre-download it BEFORE stopping current FFmpeg stream!
                     NEW_YT=""
                     if echo "$PATH_NOW" | grep -qiE "youtube|youtu\.be"; then
