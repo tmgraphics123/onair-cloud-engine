@@ -26,11 +26,13 @@ jobs:
       - name: Checkout Engine
         uses: actions/checkout@v4
 
-      - name: Install FFmpeg, yt-dlp, Virtual Display & Audio
+      - name: Configure Timezone, Urdu Fonts & yt-dlp (Instant 2s Setup)
         run: |
           sudo ln -snf /usr/share/zoneinfo/Asia/Karachi /etc/localtime && echo "Asia/Karachi" | sudo tee /etc/timezone
-          sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq || true
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg xvfb pulseaudio jq curl fonts-noto-core fonts-noto-color-emoji fonts-hosny-amiri || true
+          mkdir -p ~/.local/share/fonts
+          curl -sL "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf" -o ~/.local/share/fonts/Amiri-Bold.ttf || true
+          curl -sL "https://github.com/google/fonts/raw/main/ofl/notonastaliqurdu/NotoNastaliqUrdu%5Bwght%5D.ttf" -o ~/.local/share/fonts/NotoNastaliqUrdu.ttf || true
+          fc-cache -f ~/.local/share/fonts || true
           sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && sudo chmod a+rx /usr/local/bin/yt-dlp || true
 
       - name: Launch 24/7 Headless Broadcast Studio (Local NVMe SSD + YouTube Bot-Bypass + Dynamic Encoder Settings)
