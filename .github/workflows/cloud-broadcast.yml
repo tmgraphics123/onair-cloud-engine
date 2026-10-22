@@ -56,9 +56,10 @@ jobs:
           fi
 
           mkdir -p /tmp/media_cache
-          # Pre-cache USP_MULTAN and yt_cAd8cvqRi9g.mp4 to local NVMe SSD in <1s
+          # Pre-cache USP_MULTAN, yt_cAd8cvqRi9g.mp4, and yt_P4zyZAl30To.mp4 to local NVMe SSD
           curl -sL "https://24.onairplayout.com/uploads/USP_MULTAN_15_Anniversary.mp4" -o "/tmp/media_cache/USP_MULTAN_15_Anniversary.mp4" &
           curl -sL "https://24.onairplayout.com/uploads/yt_cAd8cvqRi9g.mp4" -o "/tmp/media_cache/yt_cAd8cvqRi9g.mp4" &
+          curl -sL "https://24.onairplayout.com/uploads/yt_P4zyZAl30To.mp4" -o "/tmp/media_cache/yt_P4zyZAl30To.mp4" &
           DEFAULT_HF_VIDEO="https://huggingface.co/buckets/Onairplayout/playout-media/resolve/SSRmovies.COM%20-%20Elite%20Force%202026%20S01E01%20NF%20Dual%20Audio%20Hindi%20(ORG%205.1)%20720p%20WEB-DL%20x264%20Multi%20Subs.mkv"
           (
             curl -sL "$DEFAULT_HF_VIDEO" -o "/tmp/media_cache/elite_force.mkv.tmp" && mv "/tmp/media_cache/elite_force.mkv.tmp" "/tmp/media_cache/Elite_Force_2026_S01E01_720p_HD.mp4"
@@ -130,12 +131,13 @@ jobs:
             VIDEO_NAME=$(echo "$STATE_JSON" | jq -r '.programItem.name // "Elite_Force_2026_S01E01_720p_HD.mp4"')
             HF_URL=$(echo "$STATE_JSON" | jq -r '.programItem.hfResolveUrl // empty')
             PATH_URL=$(echo "$STATE_JSON" | jq -r '.programItem.path // empty')
-            DURATION_VAL=$(echo "$STATE_JSON" | jq -r '.programItem.duration // 0' | awk '{print int($1)}')
+            DURATION_VAL=$(echo "$STATE_JSON" | jq -r '.programItem.duration // 1919' | awk '{print int($1)}')
+            if [ -z "$DURATION_VAL" ] || [ "$DURATION_VAL" -le 5 ]; then DURATION_VAL=1919; fi
             TIMECODE=$(echo "$STATE_JSON" | jq -r '.timecode // 0' | awk '{print int($1)}')
             if [ -z "$TIMECODE" ] || [ "$TIMECODE" -lt 0 ]; then
               TIMECODE=0
             fi
-            if [ -n "$DURATION_VAL" ] && [ "$DURATION_VAL" -gt 10 ] && [ "$TIMECODE" -ge $(( DURATION_VAL - 4 )) ]; then
+            if [ "$DURATION_VAL" -gt 10 ] && [ "$TIMECODE" -ge $(( DURATION_VAL - 4 )) ]; then
               TIMECODE=0
             fi
 
@@ -157,13 +159,13 @@ jobs:
                 fi
               fi
               if [ ! -s "$CACHE_FILE" ]; then
-                # 2. Download via yt-dlp + Cloudflare WARP proxy + node JS challenge solver
+                # 2. Download via yt-dlp + Cloudflare WARP proxy + node JS challenge solver (--concurrent-fragments 8 for fast download)
                 echo "Downloading YouTube video $YT_ID via yt-dlp + Cloudflare WARP..."
-                yt-dlp --js-runtimes node --proxy "socks5://127.0.0.1:40000" -f "18/best[height<=720][ext=mp4]/best[height<=720]" -o "${CACHE_FILE}.tmp" "https://www.youtube.com/watch?v=${YT_ID}" || \
-                yt-dlp --js-runtimes node -f "18/best[height<=720][ext=mp4]/best[height<=720]" -o "${CACHE_FILE}.tmp" "https://www.youtube.com/watch?v=${YT_ID}" || true
+                yt-dlp --js-runtimes node --concurrent-fragments 8 --proxy "socks5://127.0.0.1:40000" -f "18/best[height<=720][ext=mp4]/best[height<=720]" -o "${CACHE_FILE}.tmp" "https://www.youtube.com/watch?v=${YT_ID}" || \
+                yt-dlp --js-runtimes node --concurrent-fragments 8 -f "18/best[height<=720][ext=mp4]/best[height<=720]" -o "${CACHE_FILE}.tmp" "https://www.youtube.com/watch?v=${YT_ID}" || true
                 if [ -s "${CACHE_FILE}.tmp" ]; then
                   mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
-                  # Also upload to 24.onairplayout.com so future runs & Studio Monitor have instant MP4 access
+                  # Upload to 24.onairplayout.com so future runs & Studio Monitor have instant MP4 access
                   curl -s -X POST "https://24.onairplayout.com/api/upload-media" -H "Content-Type: application/octet-stream" -H "x-file-name: yt_${YT_ID}.mp4" --data-binary "@$CACHE_FILE" >/dev/null 2>&1 &
                 fi
               fi
@@ -196,15 +198,34 @@ jobs:
             if [ -s "$CACHE_FILE" ]; then
               INPUT_SOURCE="$CACHE_FILE"
               LOOP_ARGS="-stream_loop -1"
+              REAL_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$CACHE_FILE" 2>/dev/null | awk '{print int($1)}')
+              if [ -n "$REAL_DUR" ] && [ "$REAL_DUR" -gt 5 ]; then
+                DURATION_VAL="$REAL_DUR"
+              fi
             else
               INPUT_SOURCE="$REMOTE_URL"
               LOOP_ARGS=""
             fi
 
-            # Background watcher: detects STOP STREAMING or Playlist Video Switch from 24.onairplayout.com/Playout
+            FF_START_TS=$(date +%s)
+
+            # Background watcher:
+            # 1) Pushes exact live FFmpeg playback timecode to /api/program/live-timecode every 2s so /Playout is 100% duration-synced
+            # 2) Pre-caches any newly added YouTube video BEFORE switching FFmpeg so /watch/live_nadeem never stalls!
             (
               while kill -0 $$ 2>/dev/null; do
                 sleep 2
+                NOW_TS=$(date +%s)
+                ELAPSED=$(( NOW_TS - FF_START_TS ))
+                if [ "$DURATION_VAL" -gt 5 ]; then
+                  LIVE_TC=$(( (TIMECODE + ELAPSED) % DURATION_VAL ))
+                else
+                  LIVE_TC=$(( TIMECODE + ELAPSED ))
+                fi
+                curl -s -X POST "https://24.onairplayout.com/api/program/live-timecode?uid=op_1790161020557&from=worker" \
+                  -H "Content-Type: application/json" \
+                  -d "{\"uid\":\"op_1790161020557\",\"timecode\":$LIVE_TC,\"fromWorker\":true}" >/dev/null 2>&1 || true
+
                 CTRL_NOW=$(curl -s "https://24.onairplayout.com/api/stream/status" || echo '{"active":true}')
                 ACT_NOW=$(echo "$CTRL_NOW" | jq -r '.active // true')
                 if [ "$ACT_NOW" = "false" ]; then
@@ -213,10 +234,31 @@ jobs:
                 fi
                 ST_NOW=$(curl -s "https://24.onairplayout.com/api/program/state?uid=op_1790161020557" || echo "{}")
                 NAME_NOW=$(echo "$ST_NOW" | jq -r '.programItem.name // empty')
-                if [ -n "$NAME_NOW" ] && [ "$NAME_NOW" != "null" ] && [ "$NAME_NOW" != "$VIDEO_NAME" ]; then
-                  echo "Operator switched playlist item to $NAME_NOW -> switching FFmpeg stream..."
-                  pkill -f "ffmpeg -hide_banner" || true
-                  break
+                PATH_NOW=$(echo "$ST_NOW" | jq -r '.programItem.path // empty')
+                if [ -n "$NAME_NOW" ] && [ "$NAME_NOW" != "null" ]; then
+                  if [ "$NAME_NOW" != "$VIDEO_NAME" ] || ( [ -n "$PATH_NOW" ] && [ "$PATH_NOW" != "null" ] && [ "$PATH_NOW" != "$PATH_URL" ] ); then
+                    # If the new item is an uncached YouTube video, pre-download it BEFORE stopping current FFmpeg stream!
+                    NEW_YT=""
+                    if echo "$PATH_NOW" | grep -qiE "youtube|youtu\.be"; then
+                      NEW_YT=$(echo "$PATH_NOW" | sed -nE 's/.*(v=|embed\/|youtu\.be\/|shorts\/|live\/)([a-zA-Z0-9_-]{11}).*/\2/p' | head -n 1)
+                    elif echo "$PATH_NOW" | grep -q "/uploads/yt_"; then
+                      NEW_YT=$(echo "$PATH_NOW" | sed -nE 's/.*\/uploads\/yt_([a-zA-Z0-9_-]{11})\.mp4.*/\1/p' | head -n 1)
+                    fi
+                    if [ -n "$NEW_YT" ] && [ ! -s "/tmp/media_cache/yt_${NEW_YT}.mp4" ]; then
+                      if curl -sI -f "https://24.onairplayout.com/uploads/yt_${NEW_YT}.mp4" >/dev/null 2>&1; then
+                        curl -sL "https://24.onairplayout.com/uploads/yt_${NEW_YT}.mp4" -o "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" && mv "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" "/tmp/media_cache/yt_${NEW_YT}.mp4" || true
+                      else
+                        yt-dlp --js-runtimes node --concurrent-fragments 8 --proxy "socks5://127.0.0.1:40000" -f "18/best[height<=720][ext=mp4]/best[height<=720]" -o "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" "https://www.youtube.com/watch?v=${NEW_YT}" || true
+                        if [ -s "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" ]; then
+                          mv "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" "/tmp/media_cache/yt_${NEW_YT}.mp4"
+                          curl -s -X POST "https://24.onairplayout.com/api/upload-media" -H "Content-Type: application/octet-stream" -H "x-file-name: yt_${NEW_YT}.mp4" --data-binary "@/tmp/media_cache/yt_${NEW_YT}.mp4" >/dev/null 2>&1 &
+                        fi
+                      fi
+                    fi
+                    echo "Switching FFmpeg stream to $NAME_NOW ($PATH_NOW)..."
+                    pkill -f "ffmpeg -hide_banner" || true
+                    break
+                  fi
                 fi
               done
             ) &
