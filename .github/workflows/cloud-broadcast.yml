@@ -26,9 +26,13 @@ jobs:
       - name: Checkout Engine
         uses: actions/checkout@v4
 
-      - name: Configure Timezone, Urdu Fonts & yt-dlp (Instant 2s Setup)
+      - name: Configure Timezone, Xvfb, Urdu Fonts & yt-dlp (Fast Setup)
         run: |
           sudo ln -snf /usr/share/zoneinfo/Asia/Karachi /etc/localtime && echo "Asia/Karachi" | sudo tee /etc/timezone
+          if ! command -v Xvfb >/dev/null 2>&1; then
+            sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq || true
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends xvfb xauth || true
+          fi
           mkdir -p ~/.local/share/fonts
           curl -sL "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf" -o ~/.local/share/fonts/Amiri-Bold.ttf || true
           curl -sL "https://github.com/google/fonts/raw/main/ofl/notonastaliqurdu/NotoNastaliqUrdu%5Bwght%5D.ttf" -o ~/.local/share/fonts/NotoNastaliqUrdu.ttf || true
