@@ -188,10 +188,19 @@ jobs:
               REMOTE_URL="$DEFAULT_HF_VIDEO"
             fi
 
+            if [ -s "$CACHE_FILE" ] && ! ffprobe -v error "$CACHE_FILE" >/dev/null 2>&1; then
+              rm -f "$CACHE_FILE"
+            fi
+
             if [ ! -s "$CACHE_FILE" ] && [ -z "$YT_ID" ]; then
               if ! echo "$VIDEO_NAME" | grep -qi "Elite"; then
                 echo "Caching $VIDEO_NAME to local NVMe SSD ($CACHE_FILE)..."
-                curl -sL "$REMOTE_URL" -o "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE" || true
+                curl -sL "$REMOTE_URL" -o "${CACHE_FILE}.tmp" || true
+                if [ -s "${CACHE_FILE}.tmp" ] && ffprobe -v error "${CACHE_FILE}.tmp" >/dev/null 2>&1; then
+                  mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
+                else
+                  rm -f "${CACHE_FILE}.tmp"
+                fi
               fi
             fi
 
