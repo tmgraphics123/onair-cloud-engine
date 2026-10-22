@@ -1,0 +1,106 @@
+name: OnAir 24x7 Cloud Broadcast Engine
+
+on:
+  workflow_dispatch:
+    inputs:
+      feed_url:
+        description: 'Program Output Feed URL'
+        required: false
+        default: 'https://tv.onairplayout.com/?view=program&uid=admin_root'
+      rtmp_url:
+        description: 'Optional RTMP Destination (YouTube / FB / MediaMTX)'
+        required: false
+        default: ''
+      duration_sec:
+        description: 'Capture duration in seconds (e.g. 15 for test, 21000 for 6h live)'
+        required: false
+        default: '15'
+      hf_access_key:
+        description: 'HF S3 Access Key'
+        required: false
+        default: ''
+      hf_secret_key:
+        description: 'HF S3 Secret Key'
+        required: false
+        default: ''
+
+jobs:
+  broadcast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout Engine
+        uses: actions/checkout@v4
+
+      - name: Check Server Hardware (4-CPU / 16GB RAM) & Node.js + FFmpeg
+        run: |
+          echo "=== CPU CORES ==="
+          nproc
+          lscpu | grep "Model name\|CPU(s):" || true
+          echo "=== RAM MEMORY ==="
+          free -h
+          echo "=== DISK SPACE ==="
+          df -h /
+          echo "=== NODE.JS & FFMPEG & CHROME ==="
+          node -v
+          ffmpeg -version | head -n 2
+          google-chrome --version
+
+      - name: Install Virtual Display & Audio (Xvfb + PulseAudio + Fonts)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb pulseaudio fonts-noto-core fonts-noto-color-emoji
+
+      - name: Launch Headless Broadcast Studio (Chrome + FFmpeg Encoding)
+        env:
+          FEED_URL: ${{ inputs.feed_url || 'https://tv.onairplayout.com/?view=program&uid=admin_root' }}
+          RTMP_URL: ${{ inputs.rtmp_url }}
+          DURATION_SEC: ${{ inputs.duration_sec || '15' }}
+          HF_ACCESS_KEY: ${{ inputs.hf_access_key }}
+          HF_SECRET_KEY: ${{ inputs.hf_secret_key }}
+        run: |
+          # 1. Start PulseAudio virtual sink
+          pulseaudio -D --exit-idle-time=-1 || true
+          pactl load-module module-null-sink sink_name=virtual_speaker sink_properties=device.description="Virtual_Speaker" || true
+          pactl set-default-sink virtual_speaker || true
+
+          # 2. Start Xvfb 1280x720 24-bit Virtual Screen
+          Xvfb :99 -screen 0 1280x720x24 -ac +extension GLX +render -noreset &
+          export DISPLAY=:99
+          sleep 2
+
+          # 3. Launch Google Chrome in Fullscreen Kiosk Mode pointing to Live Output Feed
+          google-chrome \
+            --no-sandbox \
+            --disable-gpu \
+            --autoplay-policy=no-user-gesture-required \
+            --window-size=1280,720 \
+            --window-position=0,0 \
+            --kiosk \
+            --hide-scrollbars \
+            --disable-infobars \
+            --disable-notifications \
+            "$FEED_URL" &
+          
+          echo "Waiting 8 seconds for Output Feed & Tickers to render..."
+          sleep 8
+
+          if [ -n "$RTMP_URL" ]; then
+            echo "Streaming Live to RTMP for $DURATION_SEC seconds..."
+            ffmpeg -y -f x11grab -draw_mouse 0 -framerate 30 -video_size 1280x720 -i :99.0 \
+              -f pulse -i virtual_speaker.monitor \
+              -t "$DURATION_SEC" \
+              -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v 2500k -maxrate 2800k -bufsize 5000k -g 60 \
+              -c:a aac -b:a 128k -ar 44100 \
+              -f flv "$RTMP_URL"
+          else
+            echo "Recording $DURATION_SEC second 720p HD Broadcast Test Clip..."
+            ffmpeg -y -f x11grab -draw_mouse 0 -framerate 30 -video_size 1280x720 -i :99.0 \
+              -f pulse -i virtual_speaker.monitor \
+              -t "$DURATION_SEC" \
+              -c:v libx264 -preset veryfast -pix_fmt yuv420p -b:v 2500k -g 60 \
+              -c:a aac -b:a 128k -ar 44100 \
+              github_live_test.mp4
+            ls -lh github_live_test.mp4
+            node upload_s3.mjs github_live_test.mp4 github_live_test.mp4
+          fi
