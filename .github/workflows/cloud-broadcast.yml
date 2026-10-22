@@ -6,7 +6,7 @@ on:
       feed_url:
         description: 'Program Output Feed URL'
         required: false
-        default: 'https://24.onairplayout.com/?view=program&uid=admin_root'
+        default: 'https://24.onairplayout.com/?view=program&uid=op_1790161020557&overlay_only=1'
       rtmp_url:
         description: 'RTMP Destination URL(s) (pipe-separated for multiple)'
         required: false
@@ -20,21 +20,31 @@ jobs:
   broadcast:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    env:
+      TZ: Asia/Karachi
     steps:
       - name: Checkout Engine
         uses: actions/checkout@v4
 
       - name: Install FFmpeg, Virtual Display & Audio (Xvfb + PulseAudio + Fonts)
         run: |
+          sudo ln -snf /usr/share/zoneinfo/Asia/Karachi /etc/localtime && echo "Asia/Karachi" | sudo tee /etc/timezone
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg xvfb pulseaudio jq curl fonts-noto-core fonts-noto-color-emoji fonts-hosny-amiri
 
       - name: Launch 24/7 Headless Broadcast Studio (Direct Video + Chrome Tickers Overlay)
         env:
-          FEED_URL: ${{ inputs.feed_url || 'https://24.onairplayout.com/?view=program&uid=admin_root' }}
+          TZ: Asia/Karachi
+          FEED_URL: ${{ inputs.feed_url || 'https://24.onairplayout.com/?view=program&uid=op_1790161020557&overlay_only=1' }}
           RTMP_URL: ${{ inputs.rtmp_url || 'rtmp://rtmp.onairplayout.com:1935/live/live_nadeem' }}
           DURATION_SEC: ${{ inputs.duration_sec || '20700' }}
         run: |
+          export TZ=Asia/Karachi
+          # Ensure overlay_only=1 is appended so Chrome renders ONLY Tickers + Logo + Clock on #000000
+          if ! echo "$FEED_URL" | grep -q "overlay_only=1"; then
+            FEED_URL="${FEED_URL}&overlay_only=1"
+          fi
+
           # 1. Start PulseAudio virtual speaker
           pulseaudio -D --exit-idle-time=-1 || true
           pactl load-module module-null-sink sink_name=virtual_speaker sink_properties=device.description="Virtual_Speaker" || true
@@ -45,10 +55,10 @@ jobs:
           export DISPLAY=:99
           sleep 2
 
-          # 3. Launch Google Chrome in Fullscreen App Mode for Live Tickers + Flares + Logo + Clock
+          # 3. Launch Google Chrome in Fullscreen App Mode for Live Tickers + Flares + Logo + Clock (Pakistan Time)
           mkdir -p /tmp/chrome-prof
           touch "/tmp/chrome-prof/First Run"
-          google-chrome \
+          TZ=Asia/Karachi google-chrome \
             --no-sandbox \
             --no-first-run \
             --no-default-browser-check \
@@ -64,8 +74,8 @@ jobs:
             --disable-notifications \
             --app="$FEED_URL" &
 
-          echo "Waiting 6 seconds for Output Feed & Urdu Tickers to render..."
-          sleep 6
+          echo "Waiting 5 seconds for Output Feed & Urdu Tickers to render in Pakistan Time (Asia/Karachi)..."
+          sleep 5
 
           END_TIME=$(( $(date +%s) + DURATION_SEC ))
           DEFAULT_HF_VIDEO="https://huggingface.co/buckets/Onairplayout/playout-media/resolve/SSRmovies.COM%20-%20Elite%20Force%202026%20S01E01%20NF%20Dual%20Audio%20Hindi%20(ORG%205.1)%20720p%20WEB-DL%20x264%20Multi%20Subs.mkv"
@@ -74,16 +84,61 @@ jobs:
             REMAINING=$(( END_TIME - $(date +%s) ))
             if [ $REMAINING -le 5 ]; then break; fi
 
-            # Query current program state from 24.onairplayout.com
-            STATE_JSON=$(curl -s "https://24.onairplayout.com/api/program/state?uid=admin_root" || echo "{}")
-            VIDEO_NAME=$(echo "$STATE_JSON" | jq -r '.programItem.name // empty')
-            TIMECODE=$(echo "$STATE_JSON" | jq -r '.timecode // 700')
-            if [ -z "$TIMECODE" ] || [ "$TIMECODE" = "null" ] || [ "$TIMECODE" -lt 10 ]; then
-              TIMECODE=700
+            # Check if operator clicked STOP STREAMING in 24.onairplayout.com/Playout
+            STREAM_CTRL=$(curl -s "https://24.onairplayout.com/api/stream/status" || echo '{"active":true}')
+            IS_ACTIVE=$(echo "$STREAM_CTRL" | jq -r '.active // true')
+            if [ "$IS_ACTIVE" = "false" ]; then
+              echo "Operator stopped stream from Playout Studio. Exiting cleanly."
+              break
             fi
 
-            VIDEO_URL="$DEFAULT_HF_VIDEO"
-            echo "Streaming Video: $VIDEO_URL (starting at ${TIMECODE}s) with Live Chrome Tickers Overlay..."
+            # Query current program state from 24.onairplayout.com
+            STATE_JSON=$(curl -s "https://24.onairplayout.com/api/program/state?uid=op_1790161020557" || echo "{}")
+            VIDEO_NAME=$(echo "$STATE_JSON" | jq -r '.programItem.name // "Elite_Force_2026_S01E01_720p_HD.mp4"')
+            HF_URL=$(echo "$STATE_JSON" | jq -r '.programItem.hfResolveUrl // empty')
+            PATH_URL=$(echo "$STATE_JSON" | jq -r '.programItem.path // empty')
+            TIMECODE=$(echo "$STATE_JSON" | jq -r '.timecode // 300')
+            if [ -z "$TIMECODE" ] || [ "$TIMECODE" = "null" ] || [ "$TIMECODE" -lt 0 ]; then
+              TIMECODE=0
+            fi
+
+            if [ -n "$HF_URL" ] && [ "$HF_URL" != "null" ]; then
+              VIDEO_URL="$HF_URL"
+            elif echo "$VIDEO_NAME" | grep -qi "Elite"; then
+              VIDEO_URL="$DEFAULT_HF_VIDEO"
+            elif [ -n "$PATH_URL" ] && [ "$PATH_URL" != "null" ]; then
+              if echo "$PATH_URL" | grep -q "^http"; then
+                VIDEO_URL="$PATH_URL"
+              else
+                VIDEO_URL="https://24.onairplayout.com${PATH_URL}"
+              fi
+            else
+              VIDEO_URL="$DEFAULT_HF_VIDEO"
+            fi
+
+            echo "Streaming Video: $VIDEO_NAME ($VIDEO_URL) starting at ${TIMECODE}s..."
+            CLIP_START_EPOCH=$(date +%s)
+
+            # Background watcher: detects STOP STREAMING or Playlist Video Switch from 24.onairplayout.com/Playout
+            (
+              while kill -0 $$ 2>/dev/null; do
+                sleep 3
+                CTRL_NOW=$(curl -s "https://24.onairplayout.com/api/stream/status" || echo '{"active":true}')
+                ACT_NOW=$(echo "$CTRL_NOW" | jq -r '.active // true')
+                if [ "$ACT_NOW" = "false" ]; then
+                  pkill -f "ffmpeg -hide_banner" || true
+                  break
+                fi
+                ST_NOW=$(curl -s "https://24.onairplayout.com/api/program/state?uid=op_1790161020557" || echo "{}")
+                NAME_NOW=$(echo "$ST_NOW" | jq -r '.programItem.name // empty')
+                if [ -n "$NAME_NOW" ] && [ "$NAME_NOW" != "null" ] && [ "$NAME_NOW" != "$VIDEO_NAME" ]; then
+                  echo "Operator switched playlist item to $NAME_NOW -> switching FFmpeg stream..."
+                  pkill -f "ffmpeg -hide_banner" || true
+                  break
+                fi
+              done
+            ) &
+            WATCHER_PID=$!
 
             if echo "$RTMP_URL" | grep -q "|"; then
               TEE_STR=""
@@ -112,5 +167,7 @@ jobs:
                 -c:a aac -ac 2 -b:a 128k -ar 44100 \
                 -f flv "$RTMP_URL" || true
             fi
+
+            kill $WATCHER_PID 2>/dev/null || true
             sleep 1
           done
