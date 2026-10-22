@@ -230,7 +230,8 @@ jobs:
             # 1) Pushes exact live FFmpeg playback timecode to /api/program/live-timecode every 2s so /Playout is 100% duration-synced
             # 2) Pre-caches any newly added YouTube video BEFORE switching FFmpeg so /watch/live_nadeem never stalls!
             (
-              while kill -0 $$ 2>/dev/null; do
+              HLS_FAIL_COUNT=0
+              while kill -0 $ 2>/dev/null; do
                 sleep 2
                 NOW_TS=$(date +%s)
                 ELAPSED=$(( NOW_TS - FF_START_TS ))
@@ -246,8 +247,21 @@ jobs:
                 CTRL_NOW=$(curl -s "https://24.onairplayout.com/api/stream/status" 2>/dev/null || echo '{"active":true}')
                 ACT_NOW=$(echo "$CTRL_NOW" | jq -r '.active // true' 2>/dev/null || echo "true")
                 if [ "$ACT_NOW" = "false" ]; then
-                  pkill -f "ffmpeg -hide_banner" || true
+                  pkill -9 -f "ffmpeg -hide_banner" || true
                   break
+                fi
+                if [ "$ELAPSED" -ge 16 ] && [ $(( ELAPSED % 6 )) -eq 0 ]; then
+                  HLS_CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://24.onairplayout.com/hls/live_nadeem/index.m3u8" 2>/dev/null || echo "000")
+                  if [ "$HLS_CODE" != "200" ]; then
+                    HLS_FAIL_COUNT=$(( HLS_FAIL_COUNT + 1 ))
+                    if [ "$HLS_FAIL_COUNT" -ge 2 ]; then
+                      echo "HLS stream offline (HTTP $HLS_CODE) while FFmpeg running -> auto-restarting FFmpeg!"
+                      pkill -9 -f "ffmpeg -hide_banner" || true
+                      break
+                    fi
+                  else
+                    HLS_FAIL_COUNT=0
+                  fi
                 fi
                 ST_NOW=$(curl -s "https://24.onairplayout.com/api/program/state?uid=op_1790161020557" 2>/dev/null || echo "{}")
                 NAME_NOW=$(echo "$ST_NOW" | jq -r '.programItem.name // empty' 2>/dev/null || echo "")
@@ -275,7 +289,7 @@ jobs:
                       fi
                     fi
                     echo "Switching FFmpeg stream to $NAME_NOW ($PATH_NOW)..."
-                    pkill -f "ffmpeg -hide_banner" || true
+                    pkill -9 -f "ffmpeg -hide_banner" || true
                     break
                   fi
                 fi
@@ -291,7 +305,7 @@ jobs:
                 if [ -n "$TEE_STR" ]; then TEE_STR="${TEE_STR}|"; fi
                 TEE_STR="${TEE_STR}[f=flv:onfail=ignore]${u}"
               done
-              ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts \
+              ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts -rw_timeout 10000000 \
                 $LOOP_ARGS -re -ss "$TIMECODE" -i "$INPUT_SOURCE" \
                 -thread_queue_size 1024 -f x11grab -draw_mouse 0 -framerate "$ENC_FPS" -video_size 1280x720 -i :99.0 \
                 -t "$REMAINING" \
@@ -302,7 +316,7 @@ jobs:
                 -c:a aac -ac 2 -b:a "${ENC_ABITRATE}k" -ar 44100 \
                 -flags +global_header -f tee "$TEE_STR" || true
             else
-              ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts \
+              ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts -rw_timeout 10000000 \
                 $LOOP_ARGS -re -ss "$TIMECODE" -i "$INPUT_SOURCE" \
                 -thread_queue_size 1024 -f x11grab -draw_mouse 0 -framerate "$ENC_FPS" -video_size 1280x720 -i :99.0 \
                 -t "$REMAINING" \
@@ -311,7 +325,7 @@ jobs:
                 -af "aresample=async=1:first_pts=0" \
                 -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v "${ENC_VBITRATE}k" -maxrate "${ENC_MAXRATE}k" -bufsize "${ENC_BUFSIZE}k" -g "$ENC_GOP" -keyint_min "$ENC_GOP" -sc_threshold 0 \
                 -c:a aac -ac 2 -b:a "${ENC_ABITRATE}k" -ar 44100 \
-                -f flv "$ACTIVE_RTMP" || true
+                -rw_timeout 10000000 -f flv "$ACTIVE_RTMP" || true
             fi
 
             kill $WATCHER_PID 2>/dev/null || true
