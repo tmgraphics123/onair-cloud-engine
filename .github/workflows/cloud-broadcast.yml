@@ -6,23 +6,15 @@ on:
       feed_url:
         description: 'Program Output Feed URL'
         required: false
-        default: 'https://tv.onairplayout.com/?view=program&uid=admin_root'
+        default: 'https://24.onairplayout.com/?view=program&uid=admin_root'
       rtmp_url:
-        description: 'Optional RTMP Destination (YouTube / FB / MediaMTX)'
+        description: 'RTMP Destination URL(s) (pipe-separated for multiple)'
         required: false
         default: ''
       duration_sec:
-        description: 'Capture duration in seconds (e.g. 15 for test, 21000 for 6h live)'
+        description: 'Stream duration in seconds (default 20700 = 5h45m)'
         required: false
-        default: '15'
-      hf_access_key:
-        description: 'HF S3 Access Key'
-        required: false
-        default: ''
-      hf_secret_key:
-        description: 'HF S3 Secret Key'
-        required: false
-        default: ''
+        default: '20700'
 
 jobs:
   broadcast:
@@ -32,34 +24,18 @@ jobs:
       - name: Checkout Engine
         uses: actions/checkout@v4
 
-      - name: Check Server Hardware (4-CPU / 16GB RAM) & Node.js + FFmpeg
-        run: |
-          echo "=== CPU CORES ==="
-          nproc
-          lscpu | grep "Model name\|CPU(s):" || true
-          echo "=== RAM MEMORY ==="
-          free -h
-          echo "=== DISK SPACE ==="
-          df -h /
-          echo "=== NODE.JS & CHROME ==="
-          node -v
-          google-chrome --version
-
       - name: Install FFmpeg, Virtual Display & Audio (Xvfb + PulseAudio + Fonts)
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg xvfb pulseaudio fonts-noto-core fonts-noto-color-emoji
-          ffmpeg -version | head -n 2
+          sudo apt-get install -y -qq ffmpeg xvfb pulseaudio fonts-noto-core fonts-noto-color-emoji fonts-hosny-amiri
 
-      - name: Launch Headless Broadcast Studio (Chrome + FFmpeg Encoding)
+      - name: Launch 24/7 Headless Broadcast Studio (Chrome + FFmpeg Live Stream)
         env:
-          FEED_URL: ${{ inputs.feed_url || 'https://tv.onairplayout.com/?view=program&uid=admin_root' }}
+          FEED_URL: ${{ inputs.feed_url || 'https://24.onairplayout.com/?view=program&uid=admin_root' }}
           RTMP_URL: ${{ inputs.rtmp_url }}
-          DURATION_SEC: ${{ inputs.duration_sec || '15' }}
-          HF_ACCESS_KEY: ${{ inputs.hf_access_key }}
-          HF_SECRET_KEY: ${{ inputs.hf_secret_key }}
+          DURATION_SEC: ${{ inputs.duration_sec || '20700' }}
         run: |
-          # 1. Start PulseAudio virtual sink
+          # 1. Start PulseAudio virtual speaker
           pulseaudio -D --exit-idle-time=-1 || true
           pactl load-module module-null-sink sink_name=virtual_speaker sink_properties=device.description="Virtual_Speaker" || true
           pactl set-default-sink virtual_speaker || true
@@ -69,7 +45,7 @@ jobs:
           export DISPLAY=:99
           sleep 2
 
-          # 3. Launch Google Chrome in Fullscreen Kiosk Mode pointing to Live Output Feed
+          # 3. Launch Google Chrome in Fullscreen App Mode pointing to Live Output Feed
           mkdir -p /tmp/chrome-prof
           touch "/tmp/chrome-prof/First Run"
           google-chrome \
@@ -87,26 +63,40 @@ jobs:
             --disable-infobars \
             --disable-notifications \
             --app="$FEED_URL" &
-          
-          echo "Waiting 8 seconds for Output Feed & Tickers to render..."
-          sleep 8
+
+          echo "Waiting 6 seconds for Output Feed & Urdu Tickers to render..."
+          sleep 6
 
           if [ -n "$RTMP_URL" ]; then
-            echo "Streaming Live to RTMP for $DURATION_SEC seconds..."
-            ffmpeg -y -f x11grab -draw_mouse 0 -framerate 30 -video_size 1280x720 -i :99.0 \
-              -f pulse -i virtual_speaker.monitor \
-              -t "$DURATION_SEC" \
-              -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v 2500k -maxrate 2800k -bufsize 5000k -g 60 \
-              -c:a aac -b:a 128k -ar 44100 \
-              -f flv "$RTMP_URL"
-          else
-            echo "Recording $DURATION_SEC second 720p HD Broadcast Test Clip..."
-            ffmpeg -y -f x11grab -draw_mouse 0 -framerate 30 -video_size 1280x720 -i :99.0 \
-              -f pulse -i virtual_speaker.monitor \
-              -t "$DURATION_SEC" \
-              -c:v libx264 -preset veryfast -pix_fmt yuv420p -b:v 2500k -g 60 \
-              -c:a aac -b:a 128k -ar 44100 \
-              github_live_test.mp4
-            ls -lh github_live_test.mp4
-            node upload_s3.mjs github_live_test.mp4 github_live_test.mp4
+            echo "Starting 24/7 Live Stream for $DURATION_SEC seconds..."
+            END_TIME=$(( $(date +%s) + DURATION_SEC ))
+            while [ $(date +%s) -lt $END_TIME ]; do
+              REMAINING=$(( END_TIME - $(date +%s) ))
+              if [ $REMAINING -le 5 ]; then break; fi
+              if echo "$RTMP_URL" | grep -q "|"; then
+                # Multiple RTMP targets via tee muxer
+                TEE_STR=""
+                IFS='|' read -ra ADDR <<< "$RTMP_URL"
+                for u in "${ADDR[@]}"; do
+                  if [ -n "$TEE_STR" ]; then TEE_STR="${TEE_STR}|"; fi
+                  TEE_STR="${TEE_STR}[f=flv:onfail=ignore]${u}"
+                done
+                ffmpeg -hide_banner -loglevel warning -nostats \
+                  -thread_queue_size 1024 -f x11grab -draw_mouse 0 -framerate 30 -video_size 1280x720 -i :99.0 \
+                  -thread_queue_size 1024 -f pulse -i virtual_speaker.monitor \
+                  -t "$REMAINING" \
+                  -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v 2500k -maxrate 2800k -bufsize 5600k -g 60 -keyint_min 60 -sc_threshold 0 \
+                  -c:a aac -b:a 128k -ar 44100 -ac 2 \
+                  -flags +global_header -f tee "$TEE_STR" || true
+              else
+                ffmpeg -hide_banner -loglevel warning -nostats \
+                  -thread_queue_size 1024 -f x11grab -draw_mouse 0 -framerate 30 -video_size 1280x720 -i :99.0 \
+                  -thread_queue_size 1024 -f pulse -i virtual_speaker.monitor \
+                  -t "$REMAINING" \
+                  -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v 2500k -maxrate 2800k -bufsize 5600k -g 60 -keyint_min 60 -sc_threshold 0 \
+                  -c:a aac -b:a 128k -ar 44100 -ac 2 \
+                  -f flv "$RTMP_URL" || true
+              fi
+              sleep 2
+            done
           fi
