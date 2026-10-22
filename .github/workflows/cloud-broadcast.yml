@@ -26,13 +26,15 @@ jobs:
       - name: Checkout Engine
         uses: actions/checkout@v4
 
-      - name: Install FFmpeg, Virtual Display & Audio (Xvfb + PulseAudio + Fonts)
+      - name: Install FFmpeg, yt-dlp, Virtual Display & Audio (Xvfb + PulseAudio + Fonts)
         run: |
           sudo ln -snf /usr/share/zoneinfo/Asia/Karachi /etc/localtime && echo "Asia/Karachi" | sudo tee /etc/timezone
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg xvfb pulseaudio jq curl fonts-noto-core fonts-noto-color-emoji fonts-hosny-amiri
+          sudo apt-get install -y -qq ffmpeg xvfb pulseaudio jq curl python3 fonts-noto-core fonts-noto-color-emoji fonts-hosny-amiri
+          sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod a+rx /usr/local/bin/yt-dlp
 
-      - name: Launch 24/7 Headless Broadcast Studio (Direct Video + Chrome Tickers Overlay)
+      - name: Launch 24/7 Headless Broadcast Studio (Local NVMe SSD Cache + YouTube/Browser + Chrome Tickers)
         env:
           TZ: Asia/Karachi
           FEED_URL: ${{ inputs.feed_url || 'https://24.onairplayout.com/?view=program&uid=op_1790161020557&overlay_only=1' }}
@@ -40,10 +42,17 @@ jobs:
           DURATION_SEC: ${{ inputs.duration_sec || '20700' }}
         run: |
           export TZ=Asia/Karachi
-          # Ensure overlay_only=1 is appended so Chrome renders ONLY Tickers + Logo + Clock on #000000
           if ! echo "$FEED_URL" | grep -q "overlay_only=1"; then
             FEED_URL="${FEED_URL}&overlay_only=1"
           fi
+
+          mkdir -p /tmp/media_cache
+          # Pre-cache USP_MULTAN_15_Anniversary.mp4 (14 MB) to local NVMe SSD in <1s and start caching Elite Force in background
+          curl -sL "https://24.onairplayout.com/uploads/USP_MULTAN_15_Anniversary.mp4" -o "/tmp/media_cache/USP_MULTAN_15_Anniversary.mp4" &
+          DEFAULT_HF_VIDEO="https://huggingface.co/buckets/Onairplayout/playout-media/resolve/SSRmovies.COM%20-%20Elite%20Force%202026%20S01E01%20NF%20Dual%20Audio%20Hindi%20(ORG%205.1)%20720p%20WEB-DL%20x264%20Multi%20Subs.mkv"
+          (
+            curl -sL "$DEFAULT_HF_VIDEO" -o "/tmp/media_cache/elite_force.mkv.tmp" && mv "/tmp/media_cache/elite_force.mkv.tmp" "/tmp/media_cache/Elite_Force_2026_S01E01_720p_HD.mp4"
+          ) &
 
           # 1. Start PulseAudio virtual speaker
           pulseaudio -D --exit-idle-time=-1 || true
@@ -55,7 +64,7 @@ jobs:
           export DISPLAY=:99
           sleep 2
 
-          # 3. Launch Google Chrome in Fullscreen App Mode for Live Tickers + Flares + Logo + Clock (Pakistan Time)
+          # 3. Launch Google Chrome in Fullscreen App Mode for Live Tickers + Flares + Logo + Clock + Browser/YouTube Iframes
           mkdir -p /tmp/chrome-prof
           touch "/tmp/chrome-prof/First Run"
           TZ=Asia/Karachi google-chrome \
@@ -78,7 +87,6 @@ jobs:
           sleep 5
 
           END_TIME=$(( $(date +%s) + DURATION_SEC ))
-          DEFAULT_HF_VIDEO="https://huggingface.co/buckets/Onairplayout/playout-media/resolve/SSRmovies.COM%20-%20Elite%20Force%202026%20S01E01%20NF%20Dual%20Audio%20Hindi%20(ORG%205.1)%20720p%20WEB-DL%20x264%20Multi%20Subs.mkv"
 
           while [ $(date +%s) -lt $END_TIME ]; do
             REMAINING=$(( END_TIME - $(date +%s) ))
@@ -88,41 +96,34 @@ jobs:
             STREAM_CTRL=$(curl -s "https://24.onairplayout.com/api/stream/status" || echo '{"active":true}')
             IS_ACTIVE=$(echo "$STREAM_CTRL" | jq -r '.active // true')
             if [ "$IS_ACTIVE" = "false" ]; then
-              echo "Operator stopped stream from Playout Studio. Exiting cleanly."
-              break
+              sleep 2
+              continue
             fi
 
             # Query current program state from 24.onairplayout.com
             STATE_JSON=$(curl -s "https://24.onairplayout.com/api/program/state?uid=op_1790161020557" || echo "{}")
             VIDEO_NAME=$(echo "$STATE_JSON" | jq -r '.programItem.name // "Elite_Force_2026_S01E01_720p_HD.mp4"')
+            VIDEO_ID=$(echo "$STATE_JSON" | jq -r '.programItem.id // empty')
             HF_URL=$(echo "$STATE_JSON" | jq -r '.programItem.hfResolveUrl // empty')
             PATH_URL=$(echo "$STATE_JSON" | jq -r '.programItem.path // empty')
-            TIMECODE=$(echo "$STATE_JSON" | jq -r '.timecode // 300')
-            if [ -z "$TIMECODE" ] || [ "$TIMECODE" = "null" ] || [ "$TIMECODE" -lt 0 ]; then
+            DURATION_VAL=$(echo "$STATE_JSON" | jq -r '.programItem.duration // 0' | awk '{print int($1)}')
+            TIMECODE=$(echo "$STATE_JSON" | jq -r '.timecode // 0' | awk '{print int($1)}')
+            if [ -z "$TIMECODE" ] || [ "$TIMECODE" -lt 0 ]; then
+              TIMECODE=0
+            fi
+            if [ -n "$DURATION_VAL" ] && [ "$DURATION_VAL" -gt 10 ] && [ "$TIMECODE" -ge $(( DURATION_VAL - 4 )) ]; then
               TIMECODE=0
             fi
 
-            if [ -n "$HF_URL" ] && [ "$HF_URL" != "null" ]; then
-              VIDEO_URL="$HF_URL"
-            elif echo "$VIDEO_NAME" | grep -qi "Elite"; then
-              VIDEO_URL="$DEFAULT_HF_VIDEO"
-            elif [ -n "$PATH_URL" ] && [ "$PATH_URL" != "null" ]; then
-              if echo "$PATH_URL" | grep -q "^http"; then
-                VIDEO_URL="$PATH_URL"
-              else
-                VIDEO_URL="https://24.onairplayout.com${PATH_URL}"
-              fi
-            else
-              VIDEO_URL="$DEFAULT_HF_VIDEO"
+            IS_BROWSER_SOURCE="0"
+            if echo "$PATH_URL" | grep -qi "^browser://"; then
+              IS_BROWSER_SOURCE="1"
             fi
-
-            echo "Streaming Video: $VIDEO_NAME ($VIDEO_URL) starting at ${TIMECODE}s..."
-            CLIP_START_EPOCH=$(date +%s)
 
             # Background watcher: detects STOP STREAMING or Playlist Video Switch from 24.onairplayout.com/Playout
             (
               while kill -0 $$ 2>/dev/null; do
-                sleep 3
+                sleep 2
                 CTRL_NOW=$(curl -s "https://24.onairplayout.com/api/stream/status" || echo '{"active":true}')
                 ACT_NOW=$(echo "$CTRL_NOW" | jq -r '.active // true')
                 if [ "$ACT_NOW" = "false" ]; then
@@ -131,8 +132,14 @@ jobs:
                 fi
                 ST_NOW=$(curl -s "https://24.onairplayout.com/api/program/state?uid=op_1790161020557" || echo "{}")
                 NAME_NOW=$(echo "$ST_NOW" | jq -r '.programItem.name // empty')
+                PATH_NOW=$(echo "$ST_NOW" | jq -r '.programItem.path // empty')
                 if [ -n "$NAME_NOW" ] && [ "$NAME_NOW" != "null" ] && [ "$NAME_NOW" != "$VIDEO_NAME" ]; then
                   echo "Operator switched playlist item to $NAME_NOW -> switching FFmpeg stream..."
+                  pkill -f "ffmpeg -hide_banner" || true
+                  break
+                fi
+                if [ -n "$PATH_NOW" ] && [ "$PATH_NOW" != "null" ] && [ "$PATH_NOW" != "$PATH_URL" ]; then
+                  echo "Operator switched playlist path to $PATH_NOW -> switching FFmpeg stream..."
                   pkill -f "ffmpeg -hide_banner" || true
                   break
                 fi
@@ -140,29 +147,60 @@ jobs:
             ) &
             WATCHER_PID=$!
 
-            if echo "$RTMP_URL" | grep -q "|"; then
-              TEE_STR=""
-              IFS='|' read -ra ADDR <<< "$RTMP_URL"
-              for u in "${ADDR[@]}"; do
-                if [ -n "$TEE_STR" ]; then TEE_STR="${TEE_STR}|"; fi
-                TEE_STR="${TEE_STR}[f=flv:onfail=ignore]${u}"
-              done
-              ffmpeg -hide_banner -loglevel warning -nostats \
-                -re -ss "$TIMECODE" -i "$VIDEO_URL" \
+            if [ "$IS_BROWSER_SOURCE" = "1" ]; then
+              RAW_WEB_URL=$(echo "$PATH_URL" | sed 's#^browser://##')
+              echo "Streaming Live Browser / YouTube Source via Chrome + PulseAudio: $VIDEO_NAME ($RAW_WEB_URL)..."
+              ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts \
                 -thread_queue_size 1024 -f x11grab -draw_mouse 0 -framerate 30 -video_size 1280x720 -i :99.0 \
+                -thread_queue_size 1024 -f pulse -i virtual_speaker.monitor \
                 -t "$REMAINING" \
-                -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p[vid];[1:v]colorkey=0x000000:0.03:0.02[gfx];[vid][gfx]overlay=0:0:format=auto,format=yuv420p[outv]" \
-                -map "[outv]" -map 0:a:0? \
+                -vf "fps=30,format=yuv420p" \
+                -af "aresample=async=1:first_pts=0" \
                 -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v 2500k -maxrate 2800k -bufsize 5600k -g 60 -keyint_min 60 -sc_threshold 0 \
                 -c:a aac -ac 2 -b:a 128k -ar 44100 \
-                -flags +global_header -f tee "$TEE_STR" || true
+                -f flv "$RTMP_URL" || true
             else
-              ffmpeg -hide_banner -loglevel warning -nostats \
-                -re -ss "$TIMECODE" -i "$VIDEO_URL" \
+              SAFE_CACHE_NAME=$(echo "$VIDEO_NAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
+              CACHE_FILE="/tmp/media_cache/${SAFE_CACHE_NAME}"
+
+              if [ -n "$HF_URL" ] && [ "$HF_URL" != "null" ]; then
+                REMOTE_URL="$HF_URL"
+              elif echo "$VIDEO_NAME" | grep -qi "Elite"; then
+                REMOTE_URL="$DEFAULT_HF_VIDEO"
+              elif [ -n "$PATH_URL" ] && [ "$PATH_URL" != "null" ]; then
+                if echo "$PATH_URL" | grep -q "^http"; then
+                  REMOTE_URL="$PATH_URL"
+                else
+                  REMOTE_URL="https://24.onairplayout.com${PATH_URL}"
+                fi
+              else
+                REMOTE_URL="$DEFAULT_HF_VIDEO"
+              fi
+
+              # If not yet cached on local NVMe SSD and isn't the 416MB movie, download to SSD first so playback has 0% network stutter
+              if [ ! -s "$CACHE_FILE" ]; then
+                if ! echo "$VIDEO_NAME" | grep -qi "Elite"; then
+                  echo "Caching $VIDEO_NAME to local NVMe SSD ($CACHE_FILE) for 0% buffer playback..."
+                  curl -sL "$REMOTE_URL" -o "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE" || true
+                fi
+              fi
+
+              if [ -s "$CACHE_FILE" ]; then
+                INPUT_SOURCE="$CACHE_FILE"
+                LOOP_ARGS="-stream_loop -1"
+              else
+                INPUT_SOURCE="$REMOTE_URL"
+                LOOP_ARGS=""
+              fi
+
+              echo "Streaming Video: $VIDEO_NAME (Source: $INPUT_SOURCE) starting at ${TIMECODE}s..."
+              ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts \
+                $LOOP_ARGS -re -ss "$TIMECODE" -i "$INPUT_SOURCE" \
                 -thread_queue_size 1024 -f x11grab -draw_mouse 0 -framerate 30 -video_size 1280x720 -i :99.0 \
                 -t "$REMAINING" \
-                -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p[vid];[1:v]colorkey=0x000000:0.03:0.02[gfx];[vid][gfx]overlay=0:0:format=auto,format=yuv420p[outv]" \
+                -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30,setpts=PTS-STARTPTS,format=yuv420p[vid];[1:v]fps=30,setpts=PTS-STARTPTS,colorkey=0x000000:0.03:0.02[gfx];[vid][gfx]overlay=0:0:format=auto,format=yuv420p[outv]" \
                 -map "[outv]" -map 0:a:0? \
+                -af "aresample=async=1:first_pts=0" \
                 -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v 2500k -maxrate 2800k -bufsize 5600k -g 60 -keyint_min 60 -sc_threshold 0 \
                 -c:a aac -ac 2 -b:a 128k -ar 44100 \
                 -f flv "$RTMP_URL" || true
