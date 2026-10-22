@@ -10,7 +10,7 @@ on:
       rtmp_url:
         description: 'RTMP Destination URL(s) (pipe-separated for multiple)'
         required: false
-        default: ''
+        default: 'rtmp://rtmp.onairplayout.com:1935/live/live_nadeem'
       duration_sec:
         description: 'Stream duration in seconds (default 20700 = 5h45m)'
         required: false
@@ -27,12 +27,12 @@ jobs:
       - name: Install FFmpeg, Virtual Display & Audio (Xvfb + PulseAudio + Fonts)
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg xvfb pulseaudio fonts-noto-core fonts-noto-color-emoji fonts-hosny-amiri
+          sudo apt-get install -y -qq ffmpeg xvfb pulseaudio jq curl fonts-noto-core fonts-noto-color-emoji fonts-hosny-amiri
 
-      - name: Launch 24/7 Headless Broadcast Studio (Chrome + FFmpeg Live Stream)
+      - name: Launch 24/7 Headless Broadcast Studio (Direct Video + Chrome Tickers Overlay)
         env:
           FEED_URL: ${{ inputs.feed_url || 'https://24.onairplayout.com/?view=program&uid=admin_root' }}
-          RTMP_URL: ${{ inputs.rtmp_url }}
+          RTMP_URL: ${{ inputs.rtmp_url || 'rtmp://rtmp.onairplayout.com:1935/live/live_nadeem' }}
           DURATION_SEC: ${{ inputs.duration_sec || '20700' }}
         run: |
           # 1. Start PulseAudio virtual speaker
@@ -45,7 +45,7 @@ jobs:
           export DISPLAY=:99
           sleep 2
 
-          # 3. Launch Google Chrome in Fullscreen App Mode pointing to Live Output Feed
+          # 3. Launch Google Chrome in Fullscreen App Mode for Live Tickers + Flares + Logo + Clock
           mkdir -p /tmp/chrome-prof
           touch "/tmp/chrome-prof/First Run"
           google-chrome \
@@ -67,36 +67,50 @@ jobs:
           echo "Waiting 6 seconds for Output Feed & Urdu Tickers to render..."
           sleep 6
 
-          if [ -n "$RTMP_URL" ]; then
-            echo "Starting 24/7 Live Stream for $DURATION_SEC seconds..."
-            END_TIME=$(( $(date +%s) + DURATION_SEC ))
-            while [ $(date +%s) -lt $END_TIME ]; do
-              REMAINING=$(( END_TIME - $(date +%s) ))
-              if [ $REMAINING -le 5 ]; then break; fi
-              if echo "$RTMP_URL" | grep -q "|"; then
-                # Multiple RTMP targets via tee muxer
-                TEE_STR=""
-                IFS='|' read -ra ADDR <<< "$RTMP_URL"
-                for u in "${ADDR[@]}"; do
-                  if [ -n "$TEE_STR" ]; then TEE_STR="${TEE_STR}|"; fi
-                  TEE_STR="${TEE_STR}[f=flv:onfail=ignore]${u}"
-                done
-                ffmpeg -hide_banner -loglevel warning -nostats \
-                  -thread_queue_size 1024 -f x11grab -draw_mouse 0 -framerate 30 -video_size 1280x720 -i :99.0 \
-                  -thread_queue_size 1024 -f pulse -i virtual_speaker.monitor \
-                  -t "$REMAINING" \
-                  -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v 2500k -maxrate 2800k -bufsize 5600k -g 60 -keyint_min 60 -sc_threshold 0 \
-                  -c:a aac -b:a 128k -ar 44100 -ac 2 \
-                  -flags +global_header -f tee "$TEE_STR" || true
-              else
-                ffmpeg -hide_banner -loglevel warning -nostats \
-                  -thread_queue_size 1024 -f x11grab -draw_mouse 0 -framerate 30 -video_size 1280x720 -i :99.0 \
-                  -thread_queue_size 1024 -f pulse -i virtual_speaker.monitor \
-                  -t "$REMAINING" \
-                  -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v 2500k -maxrate 2800k -bufsize 5600k -g 60 -keyint_min 60 -sc_threshold 0 \
-                  -c:a aac -b:a 128k -ar 44100 -ac 2 \
-                  -f flv "$RTMP_URL" || true
-              fi
-              sleep 2
-            done
-          fi
+          END_TIME=$(( $(date +%s) + DURATION_SEC ))
+          DEFAULT_HF_VIDEO="https://huggingface.co/buckets/Onairplayout/playout-media/resolve/SSRmovies.COM%20-%20Elite%20Force%202026%20S01E01%20NF%20Dual%20Audio%20Hindi%20(ORG%205.1)%20720p%20WEB-DL%20x264%20Multi%20Subs.mkv"
+
+          while [ $(date +%s) -lt $END_TIME ]; do
+            REMAINING=$(( END_TIME - $(date +%s) ))
+            if [ $REMAINING -le 5 ]; then break; fi
+
+            # Query current program state from 24.onairplayout.com
+            STATE_JSON=$(curl -s "https://24.onairplayout.com/api/program/state?uid=admin_root" || echo "{}")
+            VIDEO_NAME=$(echo "$STATE_JSON" | jq -r '.programItem.name // empty')
+            TIMECODE=$(echo "$STATE_JSON" | jq -r '.timecode // 700')
+            if [ -z "$TIMECODE" ] || [ "$TIMECODE" = "null" ] || [ "$TIMECODE" -lt 10 ]; then
+              TIMECODE=700
+            fi
+
+            VIDEO_URL="$DEFAULT_HF_VIDEO"
+            echo "Streaming Video: $VIDEO_URL (starting at ${TIMECODE}s) with Live Chrome Tickers Overlay..."
+
+            if echo "$RTMP_URL" | grep -q "|"; then
+              TEE_STR=""
+              IFS='|' read -ra ADDR <<< "$RTMP_URL"
+              for u in "${ADDR[@]}"; do
+                if [ -n "$TEE_STR" ]; then TEE_STR="${TEE_STR}|"; fi
+                TEE_STR="${TEE_STR}[f=flv:onfail=ignore]${u}"
+              done
+              ffmpeg -hide_banner -loglevel warning -nostats \
+                -re -ss "$TIMECODE" -i "$VIDEO_URL" \
+                -thread_queue_size 1024 -f x11grab -draw_mouse 0 -framerate 30 -video_size 1280x720 -i :99.0 \
+                -t "$REMAINING" \
+                -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p[vid];[1:v]colorkey=0x000000:0.03:0.02[gfx];[vid][gfx]overlay=0:0:format=auto,format=yuv420p[outv]" \
+                -map "[outv]" -map 0:a:0? \
+                -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v 2500k -maxrate 2800k -bufsize 5600k -g 60 -keyint_min 60 -sc_threshold 0 \
+                -c:a aac -ac 2 -b:a 128k -ar 44100 \
+                -flags +global_header -f tee "$TEE_STR" || true
+            else
+              ffmpeg -hide_banner -loglevel warning -nostats \
+                -re -ss "$TIMECODE" -i "$VIDEO_URL" \
+                -thread_queue_size 1024 -f x11grab -draw_mouse 0 -framerate 30 -video_size 1280x720 -i :99.0 \
+                -t "$REMAINING" \
+                -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p[vid];[1:v]colorkey=0x000000:0.03:0.02[gfx];[vid][gfx]overlay=0:0:format=auto,format=yuv420p[outv]" \
+                -map "[outv]" -map 0:a:0? \
+                -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v 2500k -maxrate 2800k -bufsize 5600k -g 60 -keyint_min 60 -sc_threshold 0 \
+                -c:a aac -ac 2 -b:a 128k -ar 44100 \
+                -f flv "$RTMP_URL" || true
+            fi
+            sleep 1
+          done
