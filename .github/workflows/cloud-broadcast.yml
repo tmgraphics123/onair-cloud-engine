@@ -41,15 +41,15 @@ jobs:
           free -h
           echo "=== DISK SPACE ==="
           df -h /
-          echo "=== NODE.JS & FFMPEG & CHROME ==="
+          echo "=== NODE.JS & CHROME ==="
           node -v
-          ffmpeg -version | head -n 2
           google-chrome --version
 
-      - name: Install Virtual Display & Audio (Xvfb + PulseAudio + Fonts)
+      - name: Install FFmpeg, Virtual Display & Audio (Xvfb + PulseAudio + Fonts)
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq xvfb pulseaudio fonts-noto-core fonts-noto-color-emoji
+          sudo apt-get install -y -qq ffmpeg xvfb pulseaudio fonts-noto-core fonts-noto-color-emoji
+          ffmpeg -version | head -n 2
 
       - name: Launch Headless Broadcast Studio (Chrome + FFmpeg Encoding)
         env:
