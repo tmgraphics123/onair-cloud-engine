@@ -57,11 +57,11 @@ jobs:
           mkdir -p /tmp/media_cache
           CB_TS=$(date +%s)
           # Pre-cache active uploads to local NVMe SSD using .tmp + cache-buster so Cloudflare Edge never serves stale cached files
-          (curl -sL "https://24.onairplayout.com/uploads/BAHAAR_-The_Spirit_Of_Kashmir__Cover__By_Adnan_Manzoor_-_Qalaam_Studio.mp4" -o "/tmp/media_cache/bahaar.tmp" && mv "/tmp/media_cache/bahaar.tmp" "/tmp/media_cache/BAHAAR_-The_Spirit_Of_Kashmir__Cover__By_Adnan_Manzoor_-_Qalaam_Studio.mp4") &
-          (curl -sL "https://24.onairplayout.com/uploads/USP_MULTAN_15_Anniversary.mp4" -o "/tmp/media_cache/usp.tmp" && mv "/tmp/media_cache/usp.tmp" "/tmp/media_cache/USP_MULTAN_15_Anniversary.mp4") &
-          (curl -sL "https://24.onairplayout.com/uploads/yt_cAd8cvqRi9g.mp4" -o "/tmp/media_cache/yt1.tmp" && mv "/tmp/media_cache/yt1.tmp" "/tmp/media_cache/yt_cAd8cvqRi9g.mp4") &
-          (curl -sL "https://24.onairplayout.com/uploads/yt_P4zyZAl30To.mp4" -o "/tmp/media_cache/yt2.tmp" && mv "/tmp/media_cache/yt2.tmp" "/tmp/media_cache/yt_P4zyZAl30To.mp4") &
-          DEFAULT_HF_VIDEO="https://24.onairplayout.com/uploads/Elite_Force_2026_S01E01_720p_HD.mp4"
+          (curl -sL "https://24.onairplayout.com/uploads/BAHAAR_-The_Spirit_Of_Kashmir__Cover__By_Adnan_Manzoor_-_Qalaam_Studio.mp4?_v=${CB_TS}" -o "/tmp/media_cache/bahaar.tmp" && mv "/tmp/media_cache/bahaar.tmp" "/tmp/media_cache/BAHAAR_-The_Spirit_Of_Kashmir__Cover__By_Adnan_Manzoor_-_Qalaam_Studio.mp4") &
+          (curl -sL "https://24.onairplayout.com/uploads/USP_MULTAN_15_Anniversary.mp4?_v=${CB_TS}" -o "/tmp/media_cache/usp.tmp" && mv "/tmp/media_cache/usp.tmp" "/tmp/media_cache/USP_MULTAN_15_Anniversary.mp4") &
+          (curl -sL "https://24.onairplayout.com/uploads/yt_cAd8cvqRi9g.mp4?_v=${CB_TS}" -o "/tmp/media_cache/yt1.tmp" && mv "/tmp/media_cache/yt1.tmp" "/tmp/media_cache/yt_cAd8cvqRi9g.mp4") &
+          (curl -sL "https://24.onairplayout.com/uploads/yt_P4zyZAl30To.mp4?_v=${CB_TS}" -o "/tmp/media_cache/yt2.tmp" && mv "/tmp/media_cache/yt2.tmp" "/tmp/media_cache/yt_P4zyZAl30To.mp4") &
+          DEFAULT_HF_VIDEO="https://24.onairplayout.com/uploads/Elite_Force_2026_S01E01_720p_HD.mp4?_v=${CB_TS}"
           (
             curl -sL "$DEFAULT_HF_VIDEO" -o "/tmp/media_cache/elite_force.mp4.tmp" && mv "/tmp/media_cache/elite_force.mp4.tmp" "/tmp/media_cache/Elite_Force_2026_S01E01_720p_HD.mp4"
           ) &
@@ -98,7 +98,77 @@ jobs:
           echo "Waiting 5 seconds for Output Feed & Urdu Tickers to render in Pakistan Time (Asia/Karachi)..."
           sleep 5
 
+          # 4. Create Persistent Video FIFO (/tmp/vid_pipe.yuv) & Launch 24/7 Non-Stop Master RTMP Encoder
+          # This Master Encoder holds the RTMP connection to MediaMTX open continuously so switching from Video 1 -> Video 2
+          # NEVER drops the RTMP connection, NEVER destroys the HLS muxer, and NEVER stops VLC or Web players!
+          rm -f /tmp/vid_pipe.yuv
+          mkfifo /tmp/vid_pipe.yuv
+          exec 3<>/tmp/vid_pipe.yuv
+
+          # Seed 1.5s of black frames so Master Encoder initializes immediately
+          ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=black:s=1280x720:r=30 -t 1.5 -f rawvideo -pix_fmt yuv420p /tmp/vid_pipe.yuv >/dev/null 2>&1 &
+
           END_TIME=$(( $(date +%s) + DURATION_SEC ))
+
+          # Background Persistent Master RTMP Encoder Supervisor (NEVER killed on clip change!)
+          (
+            while [ $(date +%s) -lt $END_TIME ]; do
+              REM_ENC=$(( END_TIME - $(date +%s) ))
+              if [ $REM_ENC -le 5 ]; then break; fi
+              S_CTRL=$(curl -s "https://24.onairplayout.com/api/stream/status" 2>/dev/null || echo '{"active":true}')
+              S_ACT=$(echo "$S_CTRL" | jq -r '.active // true' 2>/dev/null || echo "true")
+              if [ "$S_ACT" = "false" ]; then
+                sleep 2
+                continue
+              fi
+              E_FPS=$(echo "$S_CTRL" | jq -r '.encoderConfig.fps // 30' 2>/dev/null | awk '{print int($1)}')
+              if [ -z "$E_FPS" ] || [ "$E_FPS" -lt 15 ] || [ "$E_FPS" -gt 60 ]; then E_FPS=30; fi
+              E_GOP=$(( E_FPS * 2 ))
+              E_VB=$(echo "$S_CTRL" | jq -r '.encoderConfig.videoBitrate // 2500' 2>/dev/null | awk '{print int($1)}')
+              if [ -z "$E_VB" ] || [ "$E_VB" -lt 800 ]; then E_VB=2500; fi
+              E_MAX=$(( E_VB + 300 ))
+              E_BUF=$(( E_VB * 2 ))
+              E_AB=$(echo "$S_CTRL" | jq -r '.encoderConfig.audioBitrate // 128' 2>/dev/null | awk '{print int($1)}')
+              if [ -z "$E_AB" ] || [ "$E_AB" -lt 64 ]; then E_AB=128; fi
+              C_RTMP=$(echo "$S_CTRL" | jq -r '.encoderConfig.rtmpUrl // empty' 2>/dev/null || echo "")
+              ACT_RTMP="${C_RTMP:-$RTMP_URL}"
+
+              echo "[Master-RTMP-Encoder] Starting persistent 24/7 RTMP stream to $ACT_RTMP @ ${E_FPS}fps ${E_VB}kbps..."
+              if echo "$ACT_RTMP" | grep -q "|"; then
+                TEE_S=""
+                IFS='|' read -ra ADDR <<< "$ACT_RTMP"
+                for u in "${ADDR[@]}"; do
+                  if [ -n "$TEE_S" ]; then TEE_S="${TEE_S}|"; fi
+                  TEE_S="${TEE_S}[f=flv:onfail=ignore]${u}"
+                done
+                ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts \
+                  -thread_queue_size 2048 -use_wallclock_as_timestamps 1 -f rawvideo -pix_fmt yuv420p -video_size 1280x720 -framerate "$E_FPS" -i /tmp/vid_pipe.yuv \
+                  -thread_queue_size 2048 -use_wallclock_as_timestamps 1 -f x11grab -draw_mouse 0 -framerate "$E_FPS" -video_size 1280x720 -i :99.0 \
+                  -thread_queue_size 2048 -use_wallclock_as_timestamps 1 -f pulse -i virtual_speaker.monitor \
+                  -t "$REM_ENC" \
+                  -filter_complex "[0:v]fps=$E_FPS,setpts=PTS-STARTPTS,format=yuv420p[vid];[1:v]fps=$E_FPS,setpts=PTS-STARTPTS,colorkey=0x000000:0.004:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:format=auto,format=yuv420p[outv]" \
+                  -map "[outv]" -map 2:a:0 \
+                  -af "aresample=async=1:first_pts=0" \
+                  -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v "${E_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
+                  -c:a aac -ac 2 -b:a "${E_AB}k" -ar 44100 \
+                  -flags +global_header -f tee "$TEE_S" || true
+              else
+                ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts \
+                  -thread_queue_size 2048 -use_wallclock_as_timestamps 1 -f rawvideo -pix_fmt yuv420p -video_size 1280x720 -framerate "$E_FPS" -i /tmp/vid_pipe.yuv \
+                  -thread_queue_size 2048 -use_wallclock_as_timestamps 1 -f x11grab -draw_mouse 0 -framerate "$E_FPS" -video_size 1280x720 -i :99.0 \
+                  -thread_queue_size 2048 -use_wallclock_as_timestamps 1 -f pulse -i virtual_speaker.monitor \
+                  -t "$REM_ENC" \
+                  -filter_complex "[0:v]fps=$E_FPS,setpts=PTS-STARTPTS,format=yuv420p[vid];[1:v]fps=$E_FPS,setpts=PTS-STARTPTS,colorkey=0x000000:0.004:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:format=auto,format=yuv420p[outv]" \
+                  -map "[outv]" -map 2:a:0 \
+                  -af "aresample=async=1:first_pts=0" \
+                  -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v "${E_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
+                  -c:a aac -ac 2 -b:a "${E_AB}k" -ar 44100 \
+                  -f flv "$ACT_RTMP" || true
+              fi
+              sleep 1
+            done
+          ) &
+          MASTER_ENC_SUP_PID=$!
 
           while [ $(date +%s) -lt $END_TIME ]; do
             REMAINING=$(( END_TIME - $(date +%s) ))
@@ -108,27 +178,20 @@ jobs:
             STREAM_CTRL=$(curl -s "https://24.onairplayout.com/api/stream/status" 2>/dev/null || echo '{"active":true}')
             IS_ACTIVE=$(echo "$STREAM_CTRL" | jq -r '.active // true' 2>/dev/null || echo "true")
             if [ "$IS_ACTIVE" = "false" ]; then
+              pkill -f "virtual_speaker.monitor" || true
               sleep 2
               continue
             fi
 
             ENC_FPS=$(echo "$STREAM_CTRL" | jq -r '.encoderConfig.fps // 30' 2>/dev/null | awk '{print int($1)}')
             if [ -z "$ENC_FPS" ] || [ "$ENC_FPS" -lt 15 ] || [ "$ENC_FPS" -gt 60 ]; then ENC_FPS=30; fi
-            ENC_GOP=$(( ENC_FPS * 2 ))
 
-            ENC_VBITRATE=$(echo "$STREAM_CTRL" | jq -r '.encoderConfig.videoBitrate // 2500' 2>/dev/null | awk '{print int($1)}')
-            if [ -z "$ENC_VBITRATE" ] || [ "$ENC_VBITRATE" -lt 800 ]; then ENC_VBITRATE=2500; fi
-            ENC_MAXRATE=$(( ENC_VBITRATE + 300 ))
-            ENC_BUFSIZE=$(( ENC_VBITRATE * 2 ))
-
-            ENC_ABITRATE=$(echo "$STREAM_CTRL" | jq -r '.encoderConfig.audioBitrate // 128' 2>/dev/null | awk '{print int($1)}')
-            if [ -z "$ENC_ABITRATE" ] || [ "$ENC_ABITRATE" -lt 64 ]; then ENC_ABITRATE=128; fi
-
-            CFG_RTMP=$(echo "$STREAM_CTRL" | jq -r '.encoderConfig.rtmpUrl // empty' 2>/dev/null || echo "")
-            ACTIVE_RTMP="${CFG_RTMP:-$RTMP_URL}"
-
-            # Query current program state from 24.onairplayout.com
+            # Query current program state & playlist from 24.onairplayout.com
             STATE_JSON=$(curl -s "https://24.onairplayout.com/api/program/state?uid=op_1790161020557" 2>/dev/null || echo "{}")
+            SETTINGS_JSON=$(curl -s "https://24.onairplayout.com/api/operator/settings?uid=op_1790161020557" 2>/dev/null || echo "{}")
+            PL_LEN=$(echo "$SETTINGS_JSON" | jq -r '.settings.playlist | length // 1' 2>/dev/null | awk '{print int($1)}')
+            if [ -z "$PL_LEN" ] || [ "$PL_LEN" -lt 1 ]; then PL_LEN=1; fi
+
             VIDEO_NAME=$(echo "$STATE_JSON" | jq -r '.programItem.name // "Elite_Force_2026_S01E01_720p_HD.mp4"' 2>/dev/null || echo "Elite_Force_2026_S01E01_720p_HD.mp4")
             if [ -z "$VIDEO_NAME" ] || [ "$VIDEO_NAME" = "null" ]; then VIDEO_NAME="Elite_Force_2026_S01E01_720p_HD.mp4"; fi
             HF_URL=$(echo "$STATE_JSON" | jq -r '.programItem.hfResolveUrl // empty' 2>/dev/null || echo "")
@@ -154,20 +217,16 @@ jobs:
             if [ -n "$YT_ID" ]; then
               CACHE_FILE="/tmp/media_cache/yt_${YT_ID}.mp4"
               if [ ! -s "$CACHE_FILE" ]; then
-                # 1. Check if cached on 24.onairplayout.com/uploads/yt_<YT_ID>.mp4
                 if curl -sI -f "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" >/dev/null 2>&1; then
                   echo "Downloading cached YouTube MP4 from 24.onairplayout.com/uploads/yt_${YT_ID}.mp4..."
                   curl -sL "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" -o "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE" || true
                 fi
               fi
               if [ ! -s "$CACHE_FILE" ]; then
-                # 2. Download via yt-dlp + Cloudflare WARP proxy + node JS challenge solver (--concurrent-fragments 8 for fast download)
-                echo "Downloading YouTube video $YT_ID via yt-dlp + Cloudflare WARP..."
-                yt-dlp --js-runtimes node --concurrent-fragments 8 --proxy "socks5://127.0.0.1:40000" -S "res:720,ext:mp4:m4a,vcodec:h264,acodec:aac" --merge-output-format mp4 -o "${CACHE_FILE}.tmp" "https://www.youtube.com/watch?v=${YT_ID}" || \
-                yt-dlp --js-runtimes node --concurrent-fragments 8 -S "res:720,ext:mp4:m4a,vcodec:h264,acodec:aac" --merge-output-format mp4 -o "${CACHE_FILE}.tmp" "https://www.youtube.com/watch?v=${YT_ID}" || true
+                echo "Downloading YouTube video $YT_ID via yt-dlp..."
+                yt-dlp --js-runtimes node --concurrent-fragments 8 -f "18/best[height<=720][ext=mp4]/best[height<=720]" -o "${CACHE_FILE}.tmp" "https://www.youtube.com/watch?v=${YT_ID}" || true
                 if [ -s "${CACHE_FILE}.tmp" ]; then
                   mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
-                  # Upload to 24.onairplayout.com so future runs & Studio Monitor have instant MP4 access
                   curl -s -X POST "https://24.onairplayout.com/api/upload-media" -H "Content-Type: application/octet-stream" -H "x-file-name: yt_${YT_ID}.mp4" --data-binary "@$CACHE_FILE" >/dev/null 2>&1 &
                 fi
               fi
@@ -177,20 +236,20 @@ jobs:
             fi
 
             if echo "$PATH_URL" | grep -q "^/uploads/"; then
-              REMOTE_URL="https://24.onairplayout.com${PATH_URL}"
+              REMOTE_URL="https://24.onairplayout.com${PATH_URL}?_v=$(date +%s)"
             elif [ -n "$HF_URL" ] && [ "$HF_URL" != "null" ] && ! echo "$HF_URL" | grep -q "huggingface.co/buckets/"; then
               if echo "$HF_URL" | grep -q "?"; then
-                REMOTE_URL="${HF_URL}"
+                REMOTE_URL="${HF_URL}&_v=$(date +%s)"
               else
-                REMOTE_URL="${HF_URL}"
+                REMOTE_URL="${HF_URL}?_v=$(date +%s)"
               fi
             elif echo "$VIDEO_NAME" | grep -qi "Elite"; then
-              REMOTE_URL="https://24.onairplayout.com/uploads/Elite_Force_2026_S01E01_720p_HD.mp4"
+              REMOTE_URL="https://24.onairplayout.com/uploads/Elite_Force_2026_S01E01_720p_HD.mp4?_v=$(date +%s)"
             elif [ -n "$PATH_URL" ] && [ "$PATH_URL" != "null" ]; then
               if echo "$PATH_URL" | grep -q "^http"; then
                 REMOTE_URL="$PATH_URL"
               else
-                REMOTE_URL="https://24.onairplayout.com${PATH_URL}"
+                REMOTE_URL="https://24.onairplayout.com${PATH_URL}?_v=$(date +%s)"
               fi
             else
               REMOTE_URL="$DEFAULT_HF_VIDEO"
@@ -214,10 +273,14 @@ jobs:
 
             if [ -s "$CACHE_FILE" ]; then
               INPUT_SOURCE="$CACHE_FILE"
-              LOOP_ARGS="-stream_loop -1"
               REAL_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$CACHE_FILE" 2>/dev/null | awk '{print int($1)}')
               if [ -n "$REAL_DUR" ] && [ "$REAL_DUR" -gt 5 ]; then
                 DURATION_VAL="$REAL_DUR"
+              fi
+              if [ "$PL_LEN" -le 1 ]; then
+                LOOP_ARGS="-stream_loop -1"
+              else
+                LOOP_ARGS=""
               fi
             else
               INPUT_SOURCE="$REMOTE_URL"
@@ -227,69 +290,83 @@ jobs:
             FF_START_TS=$(date +%s)
 
             # Background watcher:
-            # 1) Pushes exact live FFmpeg playback timecode to /api/program/live-timecode every 2s so /Playout is 100% duration-synced
-            # 2) Pre-caches any newly added YouTube video BEFORE switching FFmpeg so /watch/live_nadeem never stalls!
+            # 1) Pushes exact live FFmpeg playback timecode to /api/program/live-timecode every 2s
+            # 2) Pre-caches ALL queued playlist items in advance so next video starts in 0.05s
+            # 3) On video switch, ONLY stops clip_feeder_audio (keeping Master RTMP Encoder 100% connected!)
             (
-              HLS_FAIL_COUNT=0
               while kill -0 $$ 2>/dev/null; do
                 sleep 2
                 NOW_TS=$(date +%s)
                 ELAPSED=$(( NOW_TS - FF_START_TS ))
-                if [ "$DURATION_VAL" -gt 5 ]; then
-                  LIVE_TC=$(( (TIMECODE + ELAPSED) % DURATION_VAL ))
+                RAW_TC=$(( TIMECODE + ELAPSED ))
+                if [ "$PL_LEN" -le 1 ] && [ "$DURATION_VAL" -gt 5 ]; then
+                  LIVE_TC=$(( RAW_TC % DURATION_VAL ))
                 else
-                  LIVE_TC=$(( TIMECODE + ELAPSED ))
+                  LIVE_TC=$RAW_TC
                 fi
                 curl -s -X POST "https://24.onairplayout.com/api/program/live-timecode?uid=op_1790161020557&from=worker" \
                   -H "Content-Type: application/json" \
                   -d "{\"uid\":\"op_1790161020557\",\"timecode\":$LIVE_TC,\"fromWorker\":true}" >/dev/null 2>&1 || true
 
+                # Pre-cache any queued YouTube or MP4 items in the playlist in the background before their turn!
+                SET_NOW=$(curl -s "https://24.onairplayout.com/api/operator/settings?uid=op_1790161020557" 2>/dev/null || echo "{}")
+                PL_LEN_NOW=$(echo "$SET_NOW" | jq -r '.settings.playlist | length // 1' 2>/dev/null | awk '{print int($1)}')
+                if [ -n "$PL_LEN_NOW" ] && [ "$PL_LEN_NOW" -gt 0 ]; then
+                  PL_LEN=$PL_LEN_NOW
+                  for Q_PATH in $(echo "$SET_NOW" | jq -r '.settings.playlist[]?.path // empty' 2>/dev/null); do
+                    if echo "$Q_PATH" | grep -q "^/uploads/"; then
+                      Q_FNAME=$(basename "$Q_PATH")
+                      Q_LOCAL="/tmp/media_cache/${Q_FNAME}"
+                      if [ ! -s "$Q_LOCAL" ] && [ ! -f "${Q_LOCAL}.Pre" ]; then
+                        touch "${Q_LOCAL}.Pre"
+                        (curl -sL "https://24.onairplayout.com${Q_PATH}" -o "${Q_LOCAL}.tmp" && mv "${Q_LOCAL}.tmp" "$Q_LOCAL"; rm -f "${Q_LOCAL}.Pre") &
+                      fi
+                    fi
+                  done
+                fi
+
                 CTRL_NOW=$(curl -s "https://24.onairplayout.com/api/stream/status" 2>/dev/null || echo '{"active":true}')
                 ACT_NOW=$(echo "$CTRL_NOW" | jq -r '.active // true' 2>/dev/null || echo "true")
                 if [ "$ACT_NOW" = "false" ]; then
-                  pkill -9 -f "ffmpeg -hide_banner" || true
+                  pkill -f "clip_feeder_audio" || true
+                  pkill -f "virtual_speaker.monitor" || true
                   break
                 fi
-                if [ "$ELAPSED" -ge 16 ] && [ $(( ELAPSED % 6 )) -eq 0 ]; then
-                  HLS_CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://24.onairplayout.com/hls/live_nadeem/index.m3u8" 2>/dev/null || echo "000")
-                  if [ "$HLS_CODE" != "200" ]; then
-                    HLS_FAIL_COUNT=$(( HLS_FAIL_COUNT + 1 ))
-                    if [ "$HLS_FAIL_COUNT" -ge 2 ]; then
-                      echo "HLS stream offline (HTTP $HLS_CODE) while FFmpeg running -> auto-restarting FFmpeg!"
-                      pkill -9 -f "ffmpeg -hide_banner" || true
-                      break
-                    fi
-                  else
-                    HLS_FAIL_COUNT=0
-                  fi
-                fi
+
                 ST_NOW=$(curl -s "https://24.onairplayout.com/api/program/state?uid=op_1790161020557" 2>/dev/null || echo "{}")
                 NAME_NOW=$(echo "$ST_NOW" | jq -r '.programItem.name // empty' 2>/dev/null || echo "")
                 PATH_NOW=$(echo "$ST_NOW" | jq -r '.programItem.path // empty' 2>/dev/null || echo "")
                 if [ -n "$NAME_NOW" ] && [ "$NAME_NOW" != "null" ]; then
+                  NEW_YT=""
+                  if echo "$PATH_NOW" | grep -qiE "youtube|youtu\.be"; then
+                    NEW_YT=$(echo "$PATH_NOW" | sed -nE 's/.*(v=|embed\/|youtu\.be\/|shorts\/|live\/)([a-zA-Z0-9_-]{11}).*/\2/p' | head -n 1)
+                  elif echo "$PATH_NOW" | grep -q "/uploads/yt_"; then
+                    NEW_YT=$(echo "$PATH_NOW" | sed -nE 's/.*\/uploads\/yt_([a-zA-Z0-9_-]{11})\.mp4.*/\1/p' | head -n 1)
+                  fi
                   SAFE_NOW=$(echo "$NAME_NOW" | sed 's/[^a-zA-Z0-9._-]/_/g')
                   SAFE_CUR=$(echo "$VIDEO_NAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
-                  if [ "$SAFE_NOW" != "$SAFE_CUR" ] || ( [ -n "$PATH_NOW" ] && [ "$PATH_NOW" != "null" ] && [ "$PATH_NOW" != "$PATH_URL" ] ); then
-                    # If the new item is an uncached YouTube video, pre-download it BEFORE stopping current FFmpeg stream!
-                    NEW_YT=""
-                    if echo "$PATH_NOW" | grep -qiE "youtube|youtu\.be"; then
-                      NEW_YT=$(echo "$PATH_NOW" | sed -nE 's/.*(v=|embed\/|youtu\.be\/|shorts\/|live\/)([a-zA-Z0-9_-]{11}).*/\2/p' | head -n 1)
-                    elif echo "$PATH_NOW" | grep -q "/uploads/yt_"; then
-                      NEW_YT=$(echo "$PATH_NOW" | sed -nE 's/.*\/uploads\/yt_([a-zA-Z0-9_-]{11})\.mp4.*/\1/p' | head -n 1)
-                    fi
+
+                  IS_SAME_CLIP="false"
+                  if [ -n "$YT_ID" ] && [ -n "$NEW_YT" ] && [ "$YT_ID" = "$NEW_YT" ]; then
+                    IS_SAME_CLIP="true"
+                  elif [ -z "$YT_ID" ] && [ -z "$NEW_YT" ] && [ "$SAFE_NOW" = "$SAFE_CUR" ]; then
+                    IS_SAME_CLIP="true"
+                  fi
+
+                  if [ "$IS_SAME_CLIP" = "false" ]; then
                     if [ -n "$NEW_YT" ] && [ ! -s "/tmp/media_cache/yt_${NEW_YT}.mp4" ]; then
                       if curl -sI -f "https://24.onairplayout.com/uploads/yt_${NEW_YT}.mp4" >/dev/null 2>&1; then
                         curl -sL "https://24.onairplayout.com/uploads/yt_${NEW_YT}.mp4" -o "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" && mv "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" "/tmp/media_cache/yt_${NEW_YT}.mp4" || true
                       else
-                        yt-dlp --js-runtimes node --concurrent-fragments 8 --proxy "socks5://127.0.0.1:40000" -S "res:720,ext:mp4:m4a,vcodec:h264,acodec:aac" --merge-output-format mp4 -o "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" "https://www.youtube.com/watch?v=${NEW_YT}" || true
+                        yt-dlp --js-runtimes node --concurrent-fragments 8 -f "18/best[height<=720][ext=mp4]/best[height<=720]" -o "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" "https://www.youtube.com/watch?v=${NEW_YT}" || true
                         if [ -s "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" ]; then
                           mv "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" "/tmp/media_cache/yt_${NEW_YT}.mp4"
                           curl -s -X POST "https://24.onairplayout.com/api/upload-media" -H "Content-Type: application/octet-stream" -H "x-file-name: yt_${NEW_YT}.mp4" --data-binary "@/tmp/media_cache/yt_${NEW_YT}.mp4" >/dev/null 2>&1 &
                         fi
                       fi
                     fi
-                    echo "Switching FFmpeg stream to $NAME_NOW ($PATH_NOW)..."
-                    pkill -9 -f "ffmpeg -hide_banner" || true
+                    echo "Seamlessly switching Clip Feeder to $NAME_NOW ($PATH_NOW) without dropping RTMP..."
+                    pkill -f "clip_feeder_audio" || true
                     break
                   fi
                 fi
@@ -297,37 +374,19 @@ jobs:
             ) &
             WATCHER_PID=$!
 
-            echo "Streaming Video: $VIDEO_NAME (Source: $INPUT_SOURCE) @ ${ENC_FPS}fps ${ENC_VBITRATE}kbps starting at ${TIMECODE}s..."
-            if echo "$ACTIVE_RTMP" | grep -q "|"; then
-              TEE_STR=""
-              IFS='|' read -ra ADDR <<< "$ACTIVE_RTMP"
-              for u in "${ADDR[@]}"; do
-                if [ -n "$TEE_STR" ]; then TEE_STR="${TEE_STR}|"; fi
-                TEE_STR="${TEE_STR}[f=flv:onfail=ignore]${u}"
-              done
-              ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts \
-                $LOOP_ARGS -re -ss "$TIMECODE" -i "$INPUT_SOURCE" \
-                -thread_queue_size 1024 -f x11grab -draw_mouse 0 -framerate "$ENC_FPS" -video_size 1280x720 -i :99.0 \
-                -t "$REMAINING" \
-                -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=$ENC_FPS,setpts=PTS-STARTPTS,format=yuv420p[vid];[1:v]fps=$ENC_FPS,setpts=PTS-STARTPTS,colorkey=0x000000:0.004:0.0[gfx];[vid][gfx]overlay=0:0:format=auto,format=yuv420p[outv]" \
-                -map "[outv]" -map 0:a:0? \
-                -af "aresample=async=1:first_pts=0" \
-                -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v "${ENC_VBITRATE}k" -maxrate "${ENC_MAXRATE}k" -bufsize "${ENC_BUFSIZE}k" -g "$ENC_GOP" -keyint_min "$ENC_GOP" -sc_threshold 0 \
-                -c:a aac -ac 2 -b:a "${ENC_ABITRATE}k" -ar 44100 \
-                -flags +global_header -f tee "$TEE_STR" || true
-            else
-              ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts \
-                $LOOP_ARGS -re -ss "$TIMECODE" -i "$INPUT_SOURCE" \
-                -thread_queue_size 1024 -f x11grab -draw_mouse 0 -framerate "$ENC_FPS" -video_size 1280x720 -i :99.0 \
-                -t "$REMAINING" \
-                -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=$ENC_FPS,setpts=PTS-STARTPTS,format=yuv420p[vid];[1:v]fps=$ENC_FPS,setpts=PTS-STARTPTS,colorkey=0x000000:0.004:0.0[gfx];[vid][gfx]overlay=0:0:format=auto,format=yuv420p[outv]" \
-                -map "[outv]" -map 0:a:0? \
-                -af "aresample=async=1:first_pts=0" \
-                -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v "${ENC_VBITRATE}k" -maxrate "${ENC_MAXRATE}k" -bufsize "${ENC_BUFSIZE}k" -g "$ENC_GOP" -keyint_min "$ENC_GOP" -sc_threshold 0 \
-                -c:a aac -ac 2 -b:a "${ENC_ABITRATE}k" -ar 44100 \
-                -rw_timeout 15000000 -f flv "$ACTIVE_RTMP" || true
-            fi
+            echo "Feeding Video Clip: $VIDEO_NAME (Source: $INPUT_SOURCE) @ ${ENC_FPS}fps starting at ${TIMECODE}s into Persistent Master Encoder..."
+            ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts \
+              $LOOP_ARGS -re -ss "$TIMECODE" -i "$INPUT_SOURCE" \
+              -map 0:v:0 -vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=$ENC_FPS,format=yuv420p" -f rawvideo -pix_fmt yuv420p /tmp/vid_pipe.yuv \
+              -map 0:a:0? -af "aresample=44100:async=1" -f pulse -device virtual_speaker "clip_feeder_audio" || true
 
             kill $WATCHER_PID 2>/dev/null || true
-            sleep 1
+            # If a clip in a multi-item playlist finished naturally, notify the server that timecode reached DURATION_VAL so it immediately advances to the next clip
+            if [ "$PL_LEN" -gt 1 ]; then
+              curl -s -X POST "https://24.onairplayout.com/api/program/live-timecode?uid=op_1790161020557&from=worker" \
+                -H "Content-Type: application/json" \
+                -d "{\"uid\":\"op_1790161020557\",\"timecode\":$DURATION_VAL,\"fromWorker\":true}" >/dev/null 2>&1 || true
+            fi
           done
+          kill $MASTER_ENC_SUP_PID 2>/dev/null || true
+          exec 3>&-
