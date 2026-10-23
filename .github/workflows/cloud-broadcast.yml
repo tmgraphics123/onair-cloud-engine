@@ -30,9 +30,9 @@ jobs:
         run: |
           set +e
           sudo ln -snf /usr/share/zoneinfo/Asia/Karachi /etc/localtime && echo "Asia/Karachi" | sudo tee /etc/timezone
-          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v Xvfb >/dev/null 2>&1; then
+          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v Xvfb >/dev/null 2>&1 || ! command -v pactl >/dev/null 2>&1; then
             sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq || true
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ffmpeg xvfb xauth ca-certificates || true
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ffmpeg xvfb xauth ca-certificates pulseaudio pulseaudio-utils || true
           fi
           mkdir -p ~/.local/share/fonts
           curl -sL "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf" -o ~/.local/share/fonts/Amiri-Bold.ttf || true
@@ -98,15 +98,17 @@ jobs:
           echo "Waiting 5 seconds for Output Feed & Urdu Tickers to render in Pakistan Time (Asia/Karachi)..."
           sleep 5
 
-          # 4. Create Persistent Video FIFO (/tmp/vid_pipe.yuv) & Launch 24/7 Non-Stop Master RTMP Encoder
+          # 4. Create Persistent Video + Audio FIFOs (/tmp/vid_pipe.yuv & /tmp/aud_pipe.pcm) & Launch 24/7 Non-Stop Master RTMP Encoder
           # This Master Encoder holds the RTMP connection to MediaMTX open continuously so switching from Video 1 -> Video 2
           # NEVER drops the RTMP connection, NEVER destroys the HLS muxer, and NEVER stops VLC or Web players!
-          rm -f /tmp/vid_pipe.yuv
-          mkfifo /tmp/vid_pipe.yuv
+          rm -f /tmp/vid_pipe.yuv /tmp/aud_pipe.pcm
+          mkfifo /tmp/vid_pipe.yuv /tmp/aud_pipe.pcm
           exec 3<>/tmp/vid_pipe.yuv
+          exec 4<>/tmp/aud_pipe.pcm
 
-          # Seed 1.5s of black frames so Master Encoder initializes immediately
-          ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=black:s=1280x720:r=30 -t 1.5 -f rawvideo -pix_fmt yuv420p /tmp/vid_pipe.yuv >/dev/null 2>&1 &
+          # Seed 1.5s of black video + silent audio in parallel so Master Encoder initializes immediately
+          ffmpeg -y -hide_banner -loglevel error -re -f lavfi -i color=c=black:s=1280x720:r=30 -t 1.5 -f rawvideo -pix_fmt yuv420p /tmp/vid_pipe.yuv >/dev/null 2>&1 &
+          ffmpeg -y -hide_banner -loglevel error -re -f lavfi -i anullsrc=r=44100:cl=stereo -t 1.5 -f s16le -ar 44100 -ac 2 /tmp/aud_pipe.pcm >/dev/null 2>&1 &
 
           END_TIME=$(( $(date +%s) + DURATION_SEC ))
 
@@ -142,25 +144,25 @@ jobs:
                   TEE_S="${TEE_S}[f=flv:onfail=ignore]${u}"
                 done
                 ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts \
-                  -thread_queue_size 2048 -use_wallclock_as_timestamps 1 -f rawvideo -pix_fmt yuv420p -video_size 1280x720 -framerate "$E_FPS" -i /tmp/vid_pipe.yuv \
-                  -thread_queue_size 2048 -use_wallclock_as_timestamps 1 -f x11grab -draw_mouse 0 -framerate "$E_FPS" -video_size 1280x720 -i :99.0 \
-                  -thread_queue_size 2048 -use_wallclock_as_timestamps 1 -f pulse -i virtual_speaker.monitor \
+                  -thread_queue_size 2048 -f rawvideo -pix_fmt yuv420p -video_size 1280x720 -framerate "$E_FPS" -i /tmp/vid_pipe.yuv \
+                  -thread_queue_size 2048 -f x11grab -draw_mouse 0 -framerate "$E_FPS" -video_size 1280x720 -i :99.0 \
+                  -thread_queue_size 2048 -f s16le -ar 44100 -ac 2 -i /tmp/aud_pipe.pcm \
                   -t "$REM_ENC" \
-                  -filter_complex "[0:v]fps=$E_FPS,setpts=PTS-STARTPTS,format=yuv420p[vid];[1:v]fps=$E_FPS,setpts=PTS-STARTPTS,colorkey=0x000000:0.004:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:format=auto,format=yuv420p[outv]" \
+                  -filter_complex "[0:v]fps=$E_FPS,setpts=N/($E_FPS*TB),format=yuv420p[vid];[1:v]fps=$E_FPS,setpts=N/($E_FPS*TB),colorkey=0x000000:0.004:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:format=auto,format=yuv420p[outv]" \
                   -map "[outv]" -map 2:a:0 \
-                  -af "aresample=async=1:first_pts=0" \
+                  -af "asetpts=N/SR/TB" \
                   -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v "${E_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 44100 \
                   -flags +global_header -f tee "$TEE_S" || true
               else
                 ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts \
-                  -thread_queue_size 2048 -use_wallclock_as_timestamps 1 -f rawvideo -pix_fmt yuv420p -video_size 1280x720 -framerate "$E_FPS" -i /tmp/vid_pipe.yuv \
-                  -thread_queue_size 2048 -use_wallclock_as_timestamps 1 -f x11grab -draw_mouse 0 -framerate "$E_FPS" -video_size 1280x720 -i :99.0 \
-                  -thread_queue_size 2048 -use_wallclock_as_timestamps 1 -f pulse -i virtual_speaker.monitor \
+                  -thread_queue_size 2048 -f rawvideo -pix_fmt yuv420p -video_size 1280x720 -framerate "$E_FPS" -i /tmp/vid_pipe.yuv \
+                  -thread_queue_size 2048 -f x11grab -draw_mouse 0 -framerate "$E_FPS" -video_size 1280x720 -i :99.0 \
+                  -thread_queue_size 2048 -f s16le -ar 44100 -ac 2 -i /tmp/aud_pipe.pcm \
                   -t "$REM_ENC" \
-                  -filter_complex "[0:v]fps=$E_FPS,setpts=PTS-STARTPTS,format=yuv420p[vid];[1:v]fps=$E_FPS,setpts=PTS-STARTPTS,colorkey=0x000000:0.004:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:format=auto,format=yuv420p[outv]" \
+                  -filter_complex "[0:v]fps=$E_FPS,setpts=N/($E_FPS*TB),format=yuv420p[vid];[1:v]fps=$E_FPS,setpts=N/($E_FPS*TB),colorkey=0x000000:0.004:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:format=auto,format=yuv420p[outv]" \
                   -map "[outv]" -map 2:a:0 \
-                  -af "aresample=async=1:first_pts=0" \
+                  -af "asetpts=N/SR/TB" \
                   -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v "${E_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 44100 \
                   -f flv "$ACT_RTMP" || true
@@ -328,8 +330,8 @@ jobs:
                 CTRL_NOW=$(curl -s "https://24.onairplayout.com/api/stream/status" 2>/dev/null || echo '{"active":true}')
                 ACT_NOW=$(echo "$CTRL_NOW" | jq -r '.active // true' 2>/dev/null || echo "true")
                 if [ "$ACT_NOW" = "false" ]; then
-                  pkill -f "clip_feeder_audio" || true
-                  pkill -f "virtual_speaker.monitor" || true
+                  pkill -f "/tmp/vid_pipe.yuv" || true
+                  pkill -f "/tmp/aud_pipe.pcm" || true
                   break
                 fi
 
@@ -366,7 +368,8 @@ jobs:
                       fi
                     fi
                     echo "Seamlessly switching Clip Feeder to $NAME_NOW ($PATH_NOW) without dropping RTMP..."
-                    pkill -f "clip_feeder_audio" || true
+                    if [ -f /tmp/feeder_v.pid ]; then kill $(cat /tmp/feeder_v.pid) 2>/dev/null || true; fi
+                    if [ -f /tmp/feeder_a.pid ]; then kill $(cat /tmp/feeder_a.pid) 2>/dev/null || true; fi
                     break
                   fi
                 fi
@@ -375,10 +378,21 @@ jobs:
             WATCHER_PID=$!
 
             echo "Feeding Video Clip: $VIDEO_NAME (Source: $INPUT_SOURCE) @ ${ENC_FPS}fps starting at ${TIMECODE}s into Persistent Master Encoder..."
-            ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts \
+            ffmpeg -y -hide_banner -loglevel warning -nostats -fflags +genpts \
               $LOOP_ARGS -re -ss "$TIMECODE" -i "$INPUT_SOURCE" \
-              -map 0:v:0 -vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=$ENC_FPS,format=yuv420p" -f rawvideo -pix_fmt yuv420p /tmp/vid_pipe.yuv \
-              -map 0:a:0? -af "aresample=44100:async=1" -f pulse -device virtual_speaker "clip_feeder_audio" || true
+              -vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=$ENC_FPS,format=yuv420p" \
+              -f rawvideo -pix_fmt yuv420p /tmp/vid_pipe.yuv &
+            FEED_V_PID=$!
+            echo $FEED_V_PID > /tmp/feeder_v.pid
+
+            ffmpeg -y -hide_banner -loglevel warning -nostats -fflags +genpts \
+              $LOOP_ARGS -re -ss "$TIMECODE" -i "$INPUT_SOURCE" \
+              -af "aresample=44100:async=1" \
+              -f s16le -ar 44100 -ac 2 /tmp/aud_pipe.pcm &
+            FEED_A_PID=$!
+            echo $FEED_A_PID > /tmp/feeder_a.pid
+
+            wait $FEED_V_PID $FEED_A_PID 2>/dev/null || true
 
             kill $WATCHER_PID 2>/dev/null || true
             # If a clip in a multi-item playlist finished naturally, notify the server that timecode reached DURATION_VAL so it immediately advances to the next clip
@@ -390,3 +404,4 @@ jobs:
           done
           kill $MASTER_ENC_SUP_PID 2>/dev/null || true
           exec 3>&-
+          exec 4>&-
