@@ -163,8 +163,8 @@ jobs:
               if [ ! -s "$CACHE_FILE" ]; then
                 # 2. Download via yt-dlp + Cloudflare WARP proxy + node JS challenge solver (--concurrent-fragments 8 for fast download)
                 echo "Downloading YouTube video $YT_ID via yt-dlp + Cloudflare WARP..."
-                yt-dlp --js-runtimes node --concurrent-fragments 8 --proxy "socks5://127.0.0.1:40000" -f "18/best[height<=720][ext=mp4]/best[height<=720]" -o "${CACHE_FILE}.tmp" "https://www.youtube.com/watch?v=${YT_ID}" || \
-                yt-dlp --js-runtimes node --concurrent-fragments 8 -f "18/best[height<=720][ext=mp4]/best[height<=720]" -o "${CACHE_FILE}.tmp" "https://www.youtube.com/watch?v=${YT_ID}" || true
+                yt-dlp --js-runtimes node --concurrent-fragments 8 --proxy "socks5://127.0.0.1:40000" -S "res:720,ext:mp4:m4a,vcodec:h264,acodec:aac" --merge-output-format mp4 -o "${CACHE_FILE}.tmp" "https://www.youtube.com/watch?v=${YT_ID}" || \
+                yt-dlp --js-runtimes node --concurrent-fragments 8 -S "res:720,ext:mp4:m4a,vcodec:h264,acodec:aac" --merge-output-format mp4 -o "${CACHE_FILE}.tmp" "https://www.youtube.com/watch?v=${YT_ID}" || true
                 if [ -s "${CACHE_FILE}.tmp" ]; then
                   mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
                   # Upload to 24.onairplayout.com so future runs & Studio Monitor have instant MP4 access
@@ -281,7 +281,7 @@ jobs:
                       if curl -sI -f "https://24.onairplayout.com/uploads/yt_${NEW_YT}.mp4" >/dev/null 2>&1; then
                         curl -sL "https://24.onairplayout.com/uploads/yt_${NEW_YT}.mp4" -o "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" && mv "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" "/tmp/media_cache/yt_${NEW_YT}.mp4" || true
                       else
-                        yt-dlp --js-runtimes node --concurrent-fragments 8 --proxy "socks5://127.0.0.1:40000" -f "18/best[height<=720][ext=mp4]/best[height<=720]" -o "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" "https://www.youtube.com/watch?v=${NEW_YT}" || true
+                        yt-dlp --js-runtimes node --concurrent-fragments 8 --proxy "socks5://127.0.0.1:40000" -S "res:720,ext:mp4:m4a,vcodec:h264,acodec:aac" --merge-output-format mp4 -o "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" "https://www.youtube.com/watch?v=${NEW_YT}" || true
                         if [ -s "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" ]; then
                           mv "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" "/tmp/media_cache/yt_${NEW_YT}.mp4"
                           curl -s -X POST "https://24.onairplayout.com/api/upload-media" -H "Content-Type: application/octet-stream" -H "x-file-name: yt_${NEW_YT}.mp4" --data-binary "@/tmp/media_cache/yt_${NEW_YT}.mp4" >/dev/null 2>&1 &
