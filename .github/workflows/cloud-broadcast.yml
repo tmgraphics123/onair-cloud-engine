@@ -43,8 +43,15 @@ jobs:
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg xvfb xauth ca-certificates || true
           fi
           mkdir -p ~/.local/share/fonts
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends fonts-noto-cjk fonts-noto-core fonts-hosny-amiri 2>/dev/null || true
+          curl -sL --max-time 15 "https://24.onairplayout.com/uploads/fonts/JameelNooriNastaleeq.ttf" -o ~/.local/share/fonts/JameelNooriNastaleeq.ttf || true
           curl -sL --max-time 15 "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf" -o ~/.local/share/fonts/Amiri-Bold.ttf || true
           curl -sL --max-time 15 "https://github.com/google/fonts/raw/main/ofl/notonastaliqurdu/NotoNastaliqUrdu%5Bwght%5D.ttf" -o ~/.local/share/fonts/NotoNastaliqUrdu.ttf || true
+          curl -sL --max-time 15 "https://github.com/google/fonts/raw/main/ofl/notosansdevanagari/NotoSansDevanagari%5Bwdth,wght%5D.ttf" -o ~/.local/share/fonts/NotoSansDevanagari.ttf || true
+          for F_URL in $(curl -s "https://24.onairplayout.com/api/fonts/list" 2>/dev/null | jq -r '.customFonts[]?.url // empty' 2>/dev/null); do
+            F_BN=$(basename "$F_URL")
+            curl -sL --max-time 15 "https://24.onairplayout.com${F_URL}" -o "$HOME/.local/share/fonts/${F_BN}" || true
+          done
           fc-cache -f ~/.local/share/fonts || true
           sudo curl -sL --max-time 15 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && sudo chmod a+rx /usr/local/bin/yt-dlp || true
 
@@ -151,6 +158,17 @@ jobs:
               ACT_RTMP="${C_RTMP:-$RTMP_URL}"
               ENC_SIG="${E_RES}:${E_FPS}:${E_VB}:${E_AB}:${ACT_RTMP}"
 
+              # If Clip Feeder is not yet running (e.g., right after Stop -> Start), seed 0.4s of black TS packets so Master Encoder starts in <0.5s with zero block!
+              if [ ! -f /tmp/feeder_av.pid ] || ! kill -0 $(cat /tmp/feeder_av.pid 2>/dev/null) 2>/dev/null; then
+                ffmpeg -y -hide_banner -loglevel error \
+                  -f lavfi -i color=c=black:s=1280x720:r=30 \
+                  -f lavfi -i anullsrc=r=44100:cl=stereo \
+                  -t 0.4 \
+                  -c:v mpeg2video -q:v 2 -g 1 -r 30 -pix_fmt yuv420p \
+                  -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
+                  -f mpegts /tmp/muxed_av.ts >/dev/null 2>&1 &
+              fi
+
               echo "[Master-RTMP-Encoder] Starting persistent 24/7 RTMP/UDP stream to $ACT_RTMP @ ${E_RES} ${X11_FPS}fps ${E_VB}kbps..."
               if echo "$ACT_RTMP" | grep -q "|"; then
                 TEE_S=""
@@ -163,11 +181,11 @@ jobs:
                     TEE_S="${TEE_S}[f=flv:onfail=ignore]${u}"
                   fi
                 done
-                ffmpeg -hide_banner -loglevel warning -nostats -copyts -fflags +genpts+igndts \
-                  -probesize 500000 -analyzeduration 1000000 -thread_queue_size 2048 -f mpegts -i /tmp/muxed_av.ts \
+                ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts+igndts+discardcorrupt \
+                  -probesize 65536 -analyzeduration 200000 -thread_queue_size 2048 -f mpegts -i /tmp/muxed_av.ts \
                   -thread_queue_size 2048 -f x11grab -draw_mouse 0 -framerate "$X11_FPS" -video_size 1280x720 -i :99.0 \
                   -t "$REM_ENC" \
-                  -filter_complex "[0:v]setpts=N/($X11_FPS*TB),format=yuv420p[vid];[1:v]setpts=N/($X11_FPS*TB),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:format=auto${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
+                  -filter_complex "[0:v]fps=$X11_FPS,setpts=N/($X11_FPS*TB),format=yuv420p[vid];[1:v]fps=$X11_FPS,setpts=N/($X11_FPS*TB),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:format=auto${SCALE_OUT},format=yuv420p[outv];[0:a]aresample=async=1000,asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
                   -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v "${E_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 44100 \
@@ -176,11 +194,11 @@ jobs:
               else
                 OUT_FMT="flv"
                 if echo "$ACT_RTMP" | grep -qiE "^(udp|srt)://"; then OUT_FMT="mpegts"; fi
-                ffmpeg -hide_banner -loglevel warning -nostats -copyts -fflags +genpts+igndts \
-                  -probesize 500000 -analyzeduration 1000000 -thread_queue_size 2048 -f mpegts -i /tmp/muxed_av.ts \
+                ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts+igndts+discardcorrupt \
+                  -probesize 65536 -analyzeduration 200000 -thread_queue_size 2048 -f mpegts -i /tmp/muxed_av.ts \
                   -thread_queue_size 2048 -f x11grab -draw_mouse 0 -framerate "$X11_FPS" -video_size 1280x720 -i :99.0 \
                   -t "$REM_ENC" \
-                  -filter_complex "[0:v]setpts=N/($X11_FPS*TB),format=yuv420p[vid];[1:v]setpts=N/($X11_FPS*TB),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:format=auto${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
+                  -filter_complex "[0:v]fps=$X11_FPS,setpts=N/($X11_FPS*TB),format=yuv420p[vid];[1:v]fps=$X11_FPS,setpts=N/($X11_FPS*TB),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:format=auto${SCALE_OUT},format=yuv420p[outv];[0:a]aresample=async=1000,asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
                   -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v "${E_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 44100 \
@@ -342,47 +360,22 @@ jobs:
             fi
 
             FF_START_TS=$(date +%s)
+            SAFE_CUR_CLIP=$(echo "$VIDEO_NAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
+            rm -f /tmp/clip_switched_by_watcher
 
             # Background watcher:
-            # 1) Pushes exact live FFmpeg playback timecode to /api/program/live-timecode every 2s
-            # 2) Pre-caches ALL queued playlist items in advance so next video starts in 0.05s
-            # 3) On video switch, ONLY stops clip_feeder_audio (keeping Master RTMP Encoder 100% connected!)
+            # 1) Checks if active clip changed BEFORE posting timecode (preventing stale timecode overwrite & double advanceNext!)
+            # 2) Pre-caches ALL queued playlist items + newly uploaded custom fonts in advance
+            # 3) On video switch, gracefully stops clip_feeder (keeping Master RTMP Encoder 100% connected!)
             (
               while kill -0 $$ 2>/dev/null; do
                 sleep 2
-                NOW_TS=$(date +%s)
-                ELAPSED=$(( NOW_TS - FF_START_TS ))
-                RAW_TC=$(( TIMECODE + ELAPSED ))
-                if [ "$PL_LEN" -le 1 ] && [ "$DURATION_VAL" -gt 5 ]; then
-                  LIVE_TC=$(( RAW_TC % DURATION_VAL ))
-                else
-                  LIVE_TC=$RAW_TC
-                fi
-                curl -s -X POST "https://24.onairplayout.com/api/program/live-timecode?uid=op_1790161020557&from=worker" \
-                  -H "Content-Type: application/json" \
-                  -d "{\"uid\":\"op_1790161020557\",\"timecode\":$LIVE_TC,\"fromWorker\":true}" >/dev/null 2>&1 || true
-
-                # Pre-cache any queued YouTube or MP4 items in the playlist in the background before their turn!
-                SET_NOW=$(curl -s "https://24.onairplayout.com/api/operator/settings?uid=op_1790161020557" 2>/dev/null || echo "{}")
-                PL_LEN_NOW=$(echo "$SET_NOW" | jq -r '.settings.playlist | length // 1' 2>/dev/null | awk '{print int($1)}')
-                if [ -n "$PL_LEN_NOW" ] && [ "$PL_LEN_NOW" -gt 0 ]; then
-                  PL_LEN=$PL_LEN_NOW
-                  for Q_PATH in $(echo "$SET_NOW" | jq -r '.settings.playlist[]?.path // empty' 2>/dev/null); do
-                    if echo "$Q_PATH" | grep -q "^/uploads/"; then
-                      Q_FNAME=$(basename "$Q_PATH")
-                      Q_LOCAL="/tmp/media_cache/${Q_FNAME}"
-                      if [ ! -s "$Q_LOCAL" ] && [ ! -f "${Q_LOCAL}.Pre" ]; then
-                        touch "${Q_LOCAL}.Pre"
-                        (curl -sL "https://24.onairplayout.com${Q_PATH}" -o "${Q_LOCAL}.tmp" && mv "${Q_LOCAL}.tmp" "$Q_LOCAL"; rm -f "${Q_LOCAL}.Pre") &
-                      fi
-                    fi
-                  done
-                fi
 
                 CTRL_NOW=$(curl -s "https://24.onairplayout.com/api/stream/status" 2>/dev/null || echo '{"active":true}')
                 ACT_NOW=$(echo "$CTRL_NOW" | jq -r '.active // true' 2>/dev/null || echo "true")
                 if [ "$ACT_NOW" = "false" ]; then
-                  if [ -f /tmp/feeder_av.pid ]; then kill -9 $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
+                  touch /tmp/clip_switched_by_watcher
+                  if [ -f /tmp/feeder_av.pid ]; then kill -TERM $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
                   break
                 fi
 
@@ -407,15 +400,45 @@ jobs:
                   fi
 
                   if [ "$IS_SAME_CLIP" = "false" ]; then
+                    touch /tmp/clip_switched_by_watcher
                     if [ -n "$NEW_YT" ] && [ ! -s "/tmp/media_cache/yt_${NEW_YT}.mp4" ]; then
                       if ! curl -sI -f "https://24.onairplayout.com/uploads/yt_${NEW_YT}.mp4" >/dev/null 2>&1; then
                         curl -s -X POST "https://24.onairplayout.com/api/youtube/prefetch?ytId=${NEW_YT}" >/dev/null 2>&1 || true
                       fi
                     fi
                     echo "Seamlessly switching single A/V Clip Feeder to $NAME_NOW ($PATH_NOW) without dropping RTMP..."
-                    if [ -f /tmp/feeder_av.pid ]; then kill -9 $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
+                    if [ -f /tmp/feeder_av.pid ]; then kill -TERM $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
                     break
                   fi
+                fi
+
+                NOW_TS=$(date +%s)
+                ELAPSED=$(( NOW_TS - FF_START_TS ))
+                RAW_TC=$(( TIMECODE + ELAPSED ))
+                if [ "$PL_LEN" -le 1 ] && [ "$DURATION_VAL" -gt 5 ]; then
+                  LIVE_TC=$(( RAW_TC % DURATION_VAL ))
+                else
+                  LIVE_TC=$RAW_TC
+                fi
+                curl -s -X POST "https://24.onairplayout.com/api/program/live-timecode?uid=op_1790161020557&from=worker" \
+                  -H "Content-Type: application/json" \
+                  -d "{\"uid\":\"op_1790161020557\",\"timecode\":$LIVE_TC,\"fromWorker\":true,\"clipName\":\"$SAFE_CUR_CLIP\",\"ytId\":\"$YT_ID\"}" >/dev/null 2>&1 || true
+
+                # Pre-cache any queued YouTube or MP4 items in the playlist in the background before their turn!
+                SET_NOW=$(curl -s "https://24.onairplayout.com/api/operator/settings?uid=op_1790161020557" 2>/dev/null || echo "{}")
+                PL_LEN_NOW=$(echo "$SET_NOW" | jq -r '.settings.playlist | length // 1' 2>/dev/null | awk '{print int($1)}')
+                if [ -n "$PL_LEN_NOW" ] && [ "$PL_LEN_NOW" -gt 0 ]; then
+                  PL_LEN=$PL_LEN_NOW
+                  for Q_PATH in $(echo "$SET_NOW" | jq -r '.settings.playlist[]?.path // empty' 2>/dev/null); do
+                    if echo "$Q_PATH" | grep -q "^/uploads/"; then
+                      Q_FNAME=$(basename "$Q_PATH")
+                      Q_LOCAL="/tmp/media_cache/${Q_FNAME}"
+                      if [ ! -s "$Q_LOCAL" ] && [ ! -f "${Q_LOCAL}.Pre" ]; then
+                        touch "${Q_LOCAL}.Pre"
+                        (curl -sL "https://24.onairplayout.com${Q_PATH}" -o "${Q_LOCAL}.tmp" && mv "${Q_LOCAL}.tmp" "$Q_LOCAL"; rm -f "${Q_LOCAL}.Pre") &
+                      fi
+                    fi
+                  done
                 fi
               done
             ) &
@@ -440,19 +463,17 @@ jobs:
             kill $WATCHER_PID 2>/dev/null || true
             FINAL_ELAPSED=$(( $(date +%s) - FF_START_TS ))
             FINAL_REACHED=$(( TIMECODE + FINAL_ELAPSED ))
-            # Only advance/reset timecode if the clip actually played to its end (not when interrupted or still uploading)
-            if [ "$DURATION_VAL" -gt 10 ] && [ "$FINAL_REACHED" -ge $(( DURATION_VAL - 8 )) ]; then
+            # Only advance/reset timecode if the clip actually played to its end AND was not already switched by WATCHER_PID!
+            if [ ! -f /tmp/clip_switched_by_watcher ] && [ "$DURATION_VAL" -gt 10 ] && [ "$FINAL_REACHED" -ge $(( DURATION_VAL - 8 )) ]; then
               if [ "$PL_LEN" -gt 1 ]; then
                 curl -s -X POST "https://24.onairplayout.com/api/program/live-timecode?uid=op_1790161020557&from=worker" \
                   -H "Content-Type: application/json" \
-                  -d "{\"uid\":\"op_1790161020557\",\"timecode\":$DURATION_VAL,\"fromWorker\":true,\"advanceNext\":true}" >/dev/null 2>&1 || true
+                  -d "{\"uid\":\"op_1790161020557\",\"timecode\":$DURATION_VAL,\"fromWorker\":true,\"advanceNext\":true,\"clipName\":\"$SAFE_CUR_CLIP\",\"ytId\":\"$YT_ID\"}" >/dev/null 2>&1 || true
               else
                 curl -s -X POST "https://24.onairplayout.com/api/program/live-timecode?uid=op_1790161020557&from=worker" \
                   -H "Content-Type: application/json" \
-                  -d "{\"uid\":\"op_1790161020557\",\"timecode\":0,\"fromWorker\":true}" >/dev/null 2>&1 || true
+                  -d "{\"uid\":\"op_1790161020557\",\"timecode\":0,\"fromWorker\":true,\"clipName\":\"$SAFE_CUR_CLIP\",\"ytId\":\"$YT_ID\"}" >/dev/null 2>&1 || true
               fi
-            else
-              sleep 1
             fi
           done
           kill $MASTER_ENC_SUP_PID 2>/dev/null || true
