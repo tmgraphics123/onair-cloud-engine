@@ -142,13 +142,17 @@ jobs:
               C_RTMP=$(echo "$S_CTRL" | jq -r '.encoderConfig.rtmpUrl // empty' 2>/dev/null || echo "")
               ACT_RTMP="${C_RTMP:-$RTMP_URL}"
 
-              echo "[Master-RTMP-Encoder] Starting persistent 24/7 RTMP stream to $ACT_RTMP @ ${E_FPS}fps ${E_VB}kbps..."
+              echo "[Master-RTMP-Encoder] Starting persistent 24/7 RTMP/UDP stream to $ACT_RTMP @ ${E_FPS}fps ${E_VB}kbps..."
               if echo "$ACT_RTMP" | grep -q "|"; then
                 TEE_S=""
                 IFS='|' read -ra ADDR <<< "$ACT_RTMP"
                 for u in "${ADDR[@]}"; do
                   if [ -n "$TEE_S" ]; then TEE_S="${TEE_S}|"; fi
-                  TEE_S="${TEE_S}[f=flv:onfail=ignore]${u}"
+                  if echo "$u" | grep -qiE "^(udp|srt)://"; then
+                    TEE_S="${TEE_S}[f=mpegts:onfail=ignore]${u}"
+                  else
+                    TEE_S="${TEE_S}[f=flv:onfail=ignore]${u}"
+                  fi
                 done
                 ffmpeg -hide_banner -loglevel warning -nostats -copyts -fflags +genpts+igndts \
                   -probesize 500000 -analyzeduration 1000000 -thread_queue_size 2048 -f mpegts -i /tmp/muxed_av.ts \
@@ -160,6 +164,8 @@ jobs:
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 44100 \
                   -flags +global_header -f tee "$TEE_S" || true
               else
+                OUT_FMT="flv"
+                if echo "$ACT_RTMP" | grep -qiE "^(udp|srt)://"; then OUT_FMT="mpegts"; fi
                 ffmpeg -hide_banner -loglevel warning -nostats -copyts -fflags +genpts+igndts \
                   -probesize 500000 -analyzeduration 1000000 -thread_queue_size 2048 -f mpegts -i /tmp/muxed_av.ts \
                   -thread_queue_size 2048 -f x11grab -draw_mouse 0 -framerate "$E_FPS" -video_size 1280x720 -i :99.0 \
@@ -168,7 +174,7 @@ jobs:
                   -map "[outv]" -map "[outa]" \
                   -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v "${E_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 44100 \
-                  -f flv "$ACT_RTMP" || true
+                  -f "$OUT_FMT" "$ACT_RTMP" || true
               fi
               sleep 1
             done
@@ -191,8 +197,8 @@ jobs:
             ENC_FPS=$(echo "$STREAM_CTRL" | jq -r '.encoderConfig.fps // 30' 2>/dev/null | awk '{print int($1)}')
             if [ -z "$ENC_FPS" ] || [ "$ENC_FPS" -lt 15 ] || [ "$ENC_FPS" -gt 60 ]; then ENC_FPS=30; fi
 
-            # Query current program state & playlist from 24.onairplayout.com
-            STATE_JSON=$(curl -s "https://24.onairplayout.com/api/program/state?uid=op_1790161020557" 2>/dev/null || echo "{}")
+            # Query current program state & playlist from 24.onairplayout.com (worker=1 auto-resolves to next Cloud playlist item if Local PC file is selected)
+            STATE_JSON=$(curl -s "https://24.onairplayout.com/api/program/state?uid=op_1790161020557&worker=1" 2>/dev/null || echo "{}")
             SETTINGS_JSON=$(curl -s "https://24.onairplayout.com/api/operator/settings?uid=op_1790161020557" 2>/dev/null || echo "{}")
             PL_LEN=$(echo "$SETTINGS_JSON" | jq -r '.settings.playlist | length // 1' 2>/dev/null | awk '{print int($1)}')
             if [ -z "$PL_LEN" ] || [ "$PL_LEN" -lt 1 ]; then PL_LEN=1; fi
@@ -326,7 +332,7 @@ jobs:
                   break
                 fi
 
-                ST_NOW=$(curl -s "https://24.onairplayout.com/api/program/state?uid=op_1790161020557" 2>/dev/null || echo "{}")
+                ST_NOW=$(curl -s "https://24.onairplayout.com/api/program/state?uid=op_1790161020557&worker=1" 2>/dev/null || echo "{}")
                 NAME_NOW=$(echo "$ST_NOW" | jq -r '.programItem.name // empty' 2>/dev/null || echo "")
                 PATH_NOW=$(echo "$ST_NOW" | jq -r '.programItem.path // empty' 2>/dev/null || echo "")
                 if [ -n "$NAME_NOW" ] && [ "$NAME_NOW" != "null" ]; then
@@ -397,7 +403,7 @@ jobs:
               if [ "$PL_LEN" -gt 1 ]; then
                 curl -s -X POST "https://24.onairplayout.com/api/program/live-timecode?uid=op_1790161020557&from=worker" \
                   -H "Content-Type: application/json" \
-                  -d "{\"uid\":\"op_1790161020557\",\"timecode\":$DURATION_VAL,\"fromWorker\":true}" >/dev/null 2>&1 || true
+                  -d "{\"uid\":\"op_1790161020557\",\"timecode\":$DURATION_VAL,\"fromWorker\":true,\"advanceNext\":true}" >/dev/null 2>&1 || true
               else
                 curl -s -X POST "https://24.onairplayout.com/api/program/live-timecode?uid=op_1790161020557&from=worker" \
                   -H "Content-Type: application/json" \
