@@ -222,10 +222,15 @@ jobs:
             if [ -n "$YT_ID" ]; then
               CACHE_FILE="/tmp/media_cache/yt_${YT_ID}.mp4"
               if [ ! -s "$CACHE_FILE" ]; then
-                if curl -sI -f "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" >/dev/null 2>&1; then
-                  echo "Downloading cached YouTube MP4 from 24.onairplayout.com/uploads/yt_${YT_ID}.mp4..."
-                  curl -sL "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" -o "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE" || true
-                fi
+                for w_try in 1 2 3 4 5 6 7 8; do
+                  if curl -sI -f "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" >/dev/null 2>&1; then
+                    echo "Downloading cached YouTube MP4 from 24.onairplayout.com/uploads/yt_${YT_ID}.mp4..."
+                    curl -sL "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" -o "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE" || true
+                    break
+                  fi
+                  curl -s -X POST "https://24.onairplayout.com/api/youtube/prefetch?ytId=${YT_ID}" >/dev/null 2>&1 || true
+                  sleep 2
+                done
               fi
               if [ ! -s "$CACHE_FILE" ]; then
                 echo "Downloading YouTube video $YT_ID via yt-dlp..."
@@ -327,7 +332,7 @@ jobs:
                 CTRL_NOW=$(curl -s "https://24.onairplayout.com/api/stream/status" 2>/dev/null || echo '{"active":true}')
                 ACT_NOW=$(echo "$CTRL_NOW" | jq -r '.active // true' 2>/dev/null || echo "true")
                 if [ "$ACT_NOW" = "false" ]; then
-                  if [ -f /tmp/feeder_av.pid ]; then kill $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
+                  if [ -f /tmp/feeder_av.pid ]; then kill -9 $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
                   break
                 fi
 
@@ -353,9 +358,15 @@ jobs:
 
                   if [ "$IS_SAME_CLIP" = "false" ]; then
                     if [ -n "$NEW_YT" ] && [ ! -s "/tmp/media_cache/yt_${NEW_YT}.mp4" ]; then
-                      if curl -sI -f "https://24.onairplayout.com/uploads/yt_${NEW_YT}.mp4" >/dev/null 2>&1; then
-                        curl -sL "https://24.onairplayout.com/uploads/yt_${NEW_YT}.mp4" -o "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" && mv "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" "/tmp/media_cache/yt_${NEW_YT}.mp4" || true
-                      else
+                      for w_try in 1 2 3 4 5 6 7 8; do
+                        if curl -sI -f "https://24.onairplayout.com/uploads/yt_${NEW_YT}.mp4" >/dev/null 2>&1; then
+                          curl -sL "https://24.onairplayout.com/uploads/yt_${NEW_YT}.mp4" -o "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" && mv "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" "/tmp/media_cache/yt_${NEW_YT}.mp4" || true
+                          break
+                        fi
+                        curl -s -X POST "https://24.onairplayout.com/api/youtube/prefetch?ytId=${NEW_YT}" >/dev/null 2>&1 || true
+                        sleep 2
+                      done
+                      if [ ! -s "/tmp/media_cache/yt_${NEW_YT}.mp4" ]; then
                         yt-dlp --js-runtimes node --concurrent-fragments 8 -f "18/best[height<=720][ext=mp4]/best[height<=720]" -o "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" "https://www.youtube.com/watch?v=${NEW_YT}" || true
                         if [ -s "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" ]; then
                           mv "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" "/tmp/media_cache/yt_${NEW_YT}.mp4"
@@ -364,7 +375,7 @@ jobs:
                       fi
                     fi
                     echo "Seamlessly switching single A/V Clip Feeder to $NAME_NOW ($PATH_NOW) without dropping RTMP..."
-                    if [ -f /tmp/feeder_av.pid ]; then kill $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
+                    if [ -f /tmp/feeder_av.pid ]; then kill -9 $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
                     break
                   fi
                 fi
@@ -374,10 +385,10 @@ jobs:
 
             echo "Feeding 100% Lip-Synced Video+Audio Clip: $VIDEO_NAME (Source: $INPUT_SOURCE) @ ${ENC_FPS}fps starting at ${TIMECODE}s..."
             ffmpeg -y -hide_banner -loglevel warning -nostats -fflags +genpts \
-              -ss "$TIMECODE" -re -i "$INPUT_SOURCE" \
+              -accurate_seek -ss "$TIMECODE" -re -i "$INPUT_SOURCE" \
               -map 0:v:0 -map 0:a:0? \
               -vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=$ENC_FPS,format=yuv420p" \
-              -af "aresample=44100:async=1,apad" \
+              -af "aresample=44100:async=1:first_pts=0" \
               -shortest \
               -c:v mpeg2video -q:v 2 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
               -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
