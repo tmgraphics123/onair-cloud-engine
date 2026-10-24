@@ -115,15 +115,6 @@ jobs:
           mkfifo /tmp/muxed_av.ts
           exec 3<>/tmp/muxed_av.ts
 
-          # Seed 1.5s of muxed black video + silent audio so Master Encoder initializes immediately with 0 A/V offset
-          ffmpeg -y -hide_banner -loglevel error -re \
-            -f lavfi -i color=c=black:s=1280x720:r=30 \
-            -f lavfi -i anullsrc=r=44100:cl=stereo \
-            -t 1.5 \
-            -c:v mpeg2video -q:v 2 -g 1 -r 30 -pix_fmt yuv420p \
-            -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
-            -f mpegts /tmp/muxed_av.ts >/dev/null 2>&1 &
-
           END_TIME=$(( $(date +%s) + DURATION_SEC ))
 
           # Background Persistent Master RTMP Encoder Supervisor (NEVER killed on clip change!)
@@ -158,15 +149,17 @@ jobs:
               ACT_RTMP="${C_RTMP:-$RTMP_URL}"
               ENC_SIG="${E_RES}:${E_FPS}:${E_VB}:${E_AB}:${ACT_RTMP}"
 
-              # If Clip Feeder is not yet running (e.g., right after Stop -> Start), seed 0.4s of black TS packets so Master Encoder starts in <0.5s with zero block!
+              # If no Clip Feeder is currently writing to /tmp/muxed_av.ts, seed 0.8s of black TS packets so Master Encoder starts in <0.5s with zero block!
               if [ ! -f /tmp/feeder_av.pid ] || ! kill -0 $(cat /tmp/feeder_av.pid 2>/dev/null) 2>/dev/null; then
                 ffmpeg -y -hide_banner -loglevel error \
                   -f lavfi -i color=c=black:s=1280x720:r=30 \
                   -f lavfi -i anullsrc=r=44100:cl=stereo \
-                  -t 0.4 \
+                  -t 0.8 \
                   -c:v mpeg2video -q:v 2 -g 1 -r 30 -pix_fmt yuv420p \
                   -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
                   -f mpegts /tmp/muxed_av.ts >/dev/null 2>&1 &
+                SEED_PID=$!
+                sleep 0.2
               fi
 
               echo "[Master-RTMP-Encoder] Starting persistent 24/7 RTMP/UDP stream to $ACT_RTMP @ ${E_RES} ${X11_FPS}fps ${E_VB}kbps..."
@@ -445,8 +438,12 @@ jobs:
             WATCHER_PID=$!
 
             echo "Feeding 100% Lip-Synced Video+Audio Clip: $VIDEO_NAME (Source: $INPUT_SOURCE) @ ${ENC_FPS}fps starting at ${TIMECODE}s..."
+            RECON_FLAGS=""
+            if echo "$INPUT_SOURCE" | grep -qiE "^https?://"; then
+              RECON_FLAGS="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+            fi
             ffmpeg -y -hide_banner -loglevel warning -nostats -fflags +genpts \
-              -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
+              $RECON_FLAGS \
               -accurate_seek -ss "$TIMECODE" -re -i "$INPUT_SOURCE" \
               -map 0:v:0 -map 0:a:0? \
               -vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=$ENC_FPS,format=yuv420p" \
