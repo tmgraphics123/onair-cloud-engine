@@ -258,6 +258,8 @@ jobs:
             elif [ -n "$PATH_URL" ] && [ "$PATH_URL" != "null" ]; then
               if echo "$PATH_URL" | grep -q "^http"; then
                 REMOTE_URL="$PATH_URL"
+              elif echo "$PATH_URL" | grep -q "?"; then
+                REMOTE_URL="https://24.onairplayout.com${PATH_URL}&_v=$(date +%s)"
               else
                 REMOTE_URL="https://24.onairplayout.com${PATH_URL}?_v=$(date +%s)"
               fi
@@ -267,18 +269,6 @@ jobs:
 
             if [ -s "$CACHE_FILE" ] && ! ffprobe -v error "$CACHE_FILE" >/dev/null 2>&1; then
               rm -f "$CACHE_FILE"
-            fi
-
-            if [ ! -s "$CACHE_FILE" ] && [ -z "$YT_ID" ]; then
-              if ! echo "$VIDEO_NAME" | grep -qi "Elite"; then
-                echo "Caching $VIDEO_NAME to local NVMe SSD ($CACHE_FILE)..."
-                curl -sL "$REMOTE_URL" -o "${CACHE_FILE}.tmp" || true
-                if [ -s "${CACHE_FILE}.tmp" ] && ffprobe -v error "${CACHE_FILE}.tmp" >/dev/null 2>&1; then
-                  mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
-                else
-                  rm -f "${CACHE_FILE}.tmp"
-                fi
-              fi
             fi
 
             if [ -s "$CACHE_FILE" ]; then
@@ -385,10 +375,11 @@ jobs:
 
             echo "Feeding 100% Lip-Synced Video+Audio Clip: $VIDEO_NAME (Source: $INPUT_SOURCE) @ ${ENC_FPS}fps starting at ${TIMECODE}s..."
             ffmpeg -y -hide_banner -loglevel warning -nostats -fflags +genpts \
+              -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
               -accurate_seek -ss "$TIMECODE" -re -i "$INPUT_SOURCE" \
               -map 0:v:0 -map 0:a:0? \
               -vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=$ENC_FPS,format=yuv420p" \
-              -af "aresample=44100:async=1:first_pts=0" \
+              -af "adelay=0|0,aresample=44100:async=1:first_pts=0" \
               -shortest \
               -c:v mpeg2video -q:v 2 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
               -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
@@ -399,15 +390,21 @@ jobs:
             wait $FEED_AV_PID 2>/dev/null || true
 
             kill $WATCHER_PID 2>/dev/null || true
-            # If a clip in a multi-item playlist finished naturally, notify the server that timecode reached DURATION_VAL so it immediately advances to the next clip
-            if [ "$PL_LEN" -gt 1 ]; then
-              curl -s -X POST "https://24.onairplayout.com/api/program/live-timecode?uid=op_1790161020557&from=worker" \
-                -H "Content-Type: application/json" \
-                -d "{\"uid\":\"op_1790161020557\",\"timecode\":$DURATION_VAL,\"fromWorker\":true}" >/dev/null 2>&1 || true
+            FINAL_ELAPSED=$(( $(date +%s) - FF_START_TS ))
+            FINAL_REACHED=$(( TIMECODE + FINAL_ELAPSED ))
+            # Only advance/reset timecode if the clip actually played to its end (not when interrupted or still uploading)
+            if [ "$DURATION_VAL" -gt 10 ] && [ "$FINAL_REACHED" -ge $(( DURATION_VAL - 8 )) ]; then
+              if [ "$PL_LEN" -gt 1 ]; then
+                curl -s -X POST "https://24.onairplayout.com/api/program/live-timecode?uid=op_1790161020557&from=worker" \
+                  -H "Content-Type: application/json" \
+                  -d "{\"uid\":\"op_1790161020557\",\"timecode\":$DURATION_VAL,\"fromWorker\":true}" >/dev/null 2>&1 || true
+              else
+                curl -s -X POST "https://24.onairplayout.com/api/program/live-timecode?uid=op_1790161020557&from=worker" \
+                  -H "Content-Type: application/json" \
+                  -d "{\"uid\":\"op_1790161020557\",\"timecode\":0,\"fromWorker\":true}" >/dev/null 2>&1 || true
+              fi
             else
-              curl -s -X POST "https://24.onairplayout.com/api/program/live-timecode?uid=op_1790161020557&from=worker" \
-                -H "Content-Type: application/json" \
-                -d "{\"uid\":\"op_1790161020557\",\"timecode\":0,\"fromWorker\":true}" >/dev/null 2>&1 || true
+              sleep 1
             fi
           done
           kill $MASTER_ENC_SUP_PID 2>/dev/null || true
