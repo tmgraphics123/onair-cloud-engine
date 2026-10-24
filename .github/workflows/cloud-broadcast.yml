@@ -182,7 +182,7 @@ jobs:
                   -t "$REM_ENC" \
                   -filter_complex "[0:v]fps=$X11_FPS,setpts=N/($X11_FPS*TB),format=yuv420p[vid];[1:v]fps=$X11_FPS,setpts=N/($X11_FPS*TB),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:format=auto${SCALE_OUT},fps=$E_FPS,format=yuv420p[outv];[0:a]aresample=async=1000,asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
-                  -c:v libx264 -preset superfast -bf 0 -rc-lookahead 15 -pix_fmt yuv420p -b:v "${ACT_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
+                  -c:v libx264 -preset superfast -bf 0 -pix_fmt yuv420p -b:v "${ACT_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 44100 \
                   -flags +global_header -f tee "$TEE_S" &
                 M_ENC_PID=$!
@@ -195,7 +195,7 @@ jobs:
                   -t "$REM_ENC" \
                   -filter_complex "[0:v]fps=$X11_FPS,setpts=N/($X11_FPS*TB),format=yuv420p[vid];[1:v]fps=$X11_FPS,setpts=N/($X11_FPS*TB),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:format=auto${SCALE_OUT},fps=$E_FPS,format=yuv420p[outv];[0:a]aresample=async=1000,asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
-                  -c:v libx264 -preset superfast -bf 0 -rc-lookahead 15 -pix_fmt yuv420p -b:v "${ACT_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
+                  -c:v libx264 -preset superfast -bf 0 -pix_fmt yuv420p -b:v "${ACT_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 44100 \
                   -f "$OUT_FMT" "$ACT_RTMP" &
                 M_ENC_PID=$!
