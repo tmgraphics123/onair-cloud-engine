@@ -130,9 +130,17 @@ jobs:
                 sleep 2
                 continue
               fi
+              E_RES=$(echo "$S_CTRL" | jq -r '.encoderConfig.resolution // "1280x720"' 2>/dev/null || echo "1280x720")
+              case "$E_RES" in
+                1920x1080) SCALE_OUT=",scale=1920:1080:flags=fast_bilinear" ;;
+                854x480)   SCALE_OUT=",scale=854:480:flags=fast_bilinear" ;;
+                *)         E_RES="1280x720"; SCALE_OUT="" ;;
+              esac
               E_FPS=$(echo "$S_CTRL" | jq -r '.encoderConfig.fps // 30' 2>/dev/null | awk '{print int($1)}')
-              if [ -z "$E_FPS" ] || [ "$E_FPS" -lt 15 ] || [ "$E_FPS" -gt 30 ]; then E_FPS=30; fi
-              E_GOP=$(( E_FPS * 2 ))
+              if [ -z "$E_FPS" ] || [ "$E_FPS" -lt 15 ] || [ "$E_FPS" -gt 60 ]; then E_FPS=30; fi
+              # Keep X11 overlay grab at max 30fps for zero CPU spike, and output at configured bitrate/resolution
+              X11_FPS=$(( E_FPS > 30 ? 30 : E_FPS ))
+              E_GOP=$(( X11_FPS * 2 ))
               E_VB=$(echo "$S_CTRL" | jq -r '.encoderConfig.videoBitrate // 2500' 2>/dev/null | awk '{print int($1)}')
               if [ -z "$E_VB" ] || [ "$E_VB" -lt 800 ]; then E_VB=2500; fi
               E_MAX=$(( E_VB + 300 ))
@@ -141,8 +149,9 @@ jobs:
               if [ -z "$E_AB" ] || [ "$E_AB" -lt 64 ]; then E_AB=128; fi
               C_RTMP=$(echo "$S_CTRL" | jq -r '.encoderConfig.rtmpUrl // empty' 2>/dev/null || echo "")
               ACT_RTMP="${C_RTMP:-$RTMP_URL}"
+              ENC_SIG="${E_RES}:${E_FPS}:${E_VB}:${E_AB}:${ACT_RTMP}"
 
-              echo "[Master-RTMP-Encoder] Starting persistent 24/7 RTMP/UDP stream to $ACT_RTMP @ ${E_FPS}fps ${E_VB}kbps..."
+              echo "[Master-RTMP-Encoder] Starting persistent 24/7 RTMP/UDP stream to $ACT_RTMP @ ${E_RES} ${X11_FPS}fps ${E_VB}kbps..."
               if echo "$ACT_RTMP" | grep -q "|"; then
                 TEE_S=""
                 IFS='|' read -ra ADDR <<< "$ACT_RTMP"
@@ -156,26 +165,60 @@ jobs:
                 done
                 ffmpeg -hide_banner -loglevel warning -nostats -copyts -fflags +genpts+igndts \
                   -probesize 500000 -analyzeduration 1000000 -thread_queue_size 2048 -f mpegts -i /tmp/muxed_av.ts \
-                  -thread_queue_size 2048 -f x11grab -draw_mouse 0 -framerate "$E_FPS" -video_size 1280x720 -i :99.0 \
+                  -thread_queue_size 2048 -f x11grab -draw_mouse 0 -framerate "$X11_FPS" -video_size 1280x720 -i :99.0 \
                   -t "$REM_ENC" \
-                  -filter_complex "[0:v]setpts=N/($E_FPS*TB),format=yuv420p[vid];[1:v]setpts=N/($E_FPS*TB),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:format=auto,format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
+                  -filter_complex "[0:v]setpts=N/($X11_FPS*TB),format=yuv420p[vid];[1:v]setpts=N/($X11_FPS*TB),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:format=auto${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
                   -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v "${E_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 44100 \
-                  -flags +global_header -f tee "$TEE_S" || true
+                  -flags +global_header -f tee "$TEE_S" &
+                M_ENC_PID=$!
               else
                 OUT_FMT="flv"
                 if echo "$ACT_RTMP" | grep -qiE "^(udp|srt)://"; then OUT_FMT="mpegts"; fi
                 ffmpeg -hide_banner -loglevel warning -nostats -copyts -fflags +genpts+igndts \
                   -probesize 500000 -analyzeduration 1000000 -thread_queue_size 2048 -f mpegts -i /tmp/muxed_av.ts \
-                  -thread_queue_size 2048 -f x11grab -draw_mouse 0 -framerate "$E_FPS" -video_size 1280x720 -i :99.0 \
+                  -thread_queue_size 2048 -f x11grab -draw_mouse 0 -framerate "$X11_FPS" -video_size 1280x720 -i :99.0 \
                   -t "$REM_ENC" \
-                  -filter_complex "[0:v]setpts=N/($E_FPS*TB),format=yuv420p[vid];[1:v]setpts=N/($E_FPS*TB),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:format=auto,format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
+                  -filter_complex "[0:v]setpts=N/($X11_FPS*TB),format=yuv420p[vid];[1:v]setpts=N/($X11_FPS*TB),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:format=auto${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
                   -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v "${E_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 44100 \
-                  -f "$OUT_FMT" "$ACT_RTMP" || true
+                  -f "$OUT_FMT" "$ACT_RTMP" &
+                M_ENC_PID=$!
               fi
+              # Live Encoder Settings Watcher: if operator saves new Bitrate, Resolution, FPS, Audio, or RTMP URL, apply immediately!
+              (
+                while kill -0 "$M_ENC_PID" 2>/dev/null; do
+                  sleep 3
+                  CHK_C=$(curl -s "https://24.onairplayout.com/api/stream/status" 2>/dev/null || echo "")
+                  if [ -z "$CHK_C" ]; then continue; fi
+                  CHK_ACT=$(echo "$CHK_C" | jq -r '.active // true' 2>/dev/null || echo "true")
+                  if [ "$CHK_ACT" = "false" ]; then
+                    kill "$M_ENC_PID" 2>/dev/null || true
+                    break
+                  fi
+                  N_RES=$(echo "$CHK_C" | jq -r '.encoderConfig.resolution // "1280x720"' 2>/dev/null || echo "1280x720")
+                  case "$N_RES" in 1920x1080|854x480) ;; *) N_RES="1280x720" ;; esac
+                  N_FPS=$(echo "$CHK_C" | jq -r '.encoderConfig.fps // 30' 2>/dev/null | awk '{print int($1)}')
+                  if [ -z "$N_FPS" ] || [ "$N_FPS" -lt 15 ] || [ "$N_FPS" -gt 60 ]; then N_FPS=30; fi
+                  N_VB=$(echo "$CHK_C" | jq -r '.encoderConfig.videoBitrate // 2500' 2>/dev/null | awk '{print int($1)}')
+                  if [ -z "$N_VB" ] || [ "$N_VB" -lt 800 ]; then N_VB=2500; fi
+                  N_AB=$(echo "$CHK_C" | jq -r '.encoderConfig.audioBitrate // 128' 2>/dev/null | awk '{print int($1)}')
+                  if [ -z "$N_AB" ] || [ "$N_AB" -lt 64 ]; then N_AB=128; fi
+                  N_CR=$(echo "$CHK_C" | jq -r '.encoderConfig.rtmpUrl // empty' 2>/dev/null || echo "")
+                  N_RTMP="${N_CR:-$RTMP_URL}"
+                  N_SIG="${N_RES}:${N_FPS}:${N_VB}:${N_AB}:${N_RTMP}"
+                  if [ "$N_SIG" != "$ENC_SIG" ]; then
+                    echo "[Master-RTMP-Encoder] Applying updated Encoder Settings: $N_SIG"
+                    kill "$M_ENC_PID" 2>/dev/null || true
+                    break
+                  fi
+                done
+              ) &
+              CFG_WATCH_PID=$!
+              wait "$M_ENC_PID" 2>/dev/null || true
+              kill "$CFG_WATCH_PID" 2>/dev/null || true
               sleep 1
             done
           ) &
