@@ -44,7 +44,7 @@ jobs:
           fi
           mkdir -p ~/.local/share/fonts
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends fonts-noto-cjk fonts-noto-core fonts-hosny-amiri 2>/dev/null || true
-          curl -sL --max-time 15 "https://24.onairplayout.com/uploads/fonts/JameelNooriNastaleeq.ttf" -o ~/.local/share/fonts/JameelNooriNastaleeq.ttf || true
+          curl -sL --max-time 25 "https://24.onairplayout.com/fonts/Jameel%20Noori%20Nastaleeq.ttf" -o ~/.local/share/fonts/JameelNooriNastaleeq.ttf || true
           curl -sL --max-time 15 "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf" -o ~/.local/share/fonts/Amiri-Bold.ttf || true
           curl -sL --max-time 15 "https://github.com/google/fonts/raw/main/ofl/notonastaliqurdu/NotoNastaliqUrdu%5Bwght%5D.ttf" -o ~/.local/share/fonts/NotoNastaliqUrdu.ttf || true
           curl -sL --max-time 15 "https://github.com/google/fonts/raw/main/ofl/notosansdevanagari/NotoSansDevanagari%5Bwdth,wght%5D.ttf" -o ~/.local/share/fonts/NotoSansDevanagari.ttf || true
