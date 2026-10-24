@@ -131,7 +131,7 @@ jobs:
                 continue
               fi
               E_FPS=$(echo "$S_CTRL" | jq -r '.encoderConfig.fps // 30' 2>/dev/null | awk '{print int($1)}')
-              if [ -z "$E_FPS" ] || [ "$E_FPS" -lt 15 ] || [ "$E_FPS" -gt 60 ]; then E_FPS=30; fi
+              if [ -z "$E_FPS" ] || [ "$E_FPS" -lt 15 ] || [ "$E_FPS" -gt 30 ]; then E_FPS=30; fi
               E_GOP=$(( E_FPS * 2 ))
               E_VB=$(echo "$S_CTRL" | jq -r '.encoderConfig.videoBitrate // 2500' 2>/dev/null | awk '{print int($1)}')
               if [ -z "$E_VB" ] || [ "$E_VB" -lt 800 ]; then E_VB=2500; fi
@@ -195,7 +195,7 @@ jobs:
             fi
 
             ENC_FPS=$(echo "$STREAM_CTRL" | jq -r '.encoderConfig.fps // 30' 2>/dev/null | awk '{print int($1)}')
-            if [ -z "$ENC_FPS" ] || [ "$ENC_FPS" -lt 15 ] || [ "$ENC_FPS" -gt 60 ]; then ENC_FPS=30; fi
+            if [ -z "$ENC_FPS" ] || [ "$ENC_FPS" -lt 15 ] || [ "$ENC_FPS" -gt 30 ]; then ENC_FPS=30; fi
 
             # Query current program state & playlist from 24.onairplayout.com (worker=1 auto-resolves to next Cloud playlist item if Local PC file is selected)
             STATE_JSON=$(curl -s "https://24.onairplayout.com/api/program/state?uid=op_1790161020557&worker=1" 2>/dev/null || echo "{}")
@@ -228,22 +228,33 @@ jobs:
             if [ -n "$YT_ID" ]; then
               CACHE_FILE="/tmp/media_cache/yt_${YT_ID}.mp4"
               if [ ! -s "$CACHE_FILE" ]; then
-                for w_try in 1 2 3 4 5 6 7 8; do
-                  if curl -sI -f "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" >/dev/null 2>&1; then
-                    echo "Downloading cached YouTube MP4 from 24.onairplayout.com/uploads/yt_${YT_ID}.mp4..."
-                    curl -sL "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" -o "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE" || true
-                    break
+                if curl -sI -f "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" >/dev/null 2>&1; then
+                  PATH_URL="/uploads/yt_${YT_ID}.mp4"
+                  if [ ! -f "${CACHE_FILE}.dl" ]; then
+                    touch "${CACHE_FILE}.dl"
+                    (curl -sL "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" -o "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"; rm -f "${CACHE_FILE}.dl") &
                   fi
+                else
                   curl -s -X POST "https://24.onairplayout.com/api/youtube/prefetch?ytId=${YT_ID}" >/dev/null 2>&1 || true
-                  sleep 2
-                done
-              fi
-              if [ ! -s "$CACHE_FILE" ]; then
-                echo "Downloading YouTube video $YT_ID via yt-dlp..."
-                yt-dlp --js-runtimes node --concurrent-fragments 8 -f "18/best[height<=720][ext=mp4]/best[height<=720]" -o "${CACHE_FILE}.tmp" "https://www.youtube.com/watch?v=${YT_ID}" || true
-                if [ -s "${CACHE_FILE}.tmp" ]; then
-                  mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
-                  curl -s -X POST "https://24.onairplayout.com/api/upload-media" -H "Content-Type: application/octet-stream" -H "x-file-name: yt_${YT_ID}.mp4" --data-binary "@$CACHE_FILE" >/dev/null 2>&1 &
+                  for w_try in 1 2 3 4 5; do
+                    if curl -sI -f "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" >/dev/null 2>&1; then
+                      PATH_URL="/uploads/yt_${YT_ID}.mp4"
+                      if [ ! -f "${CACHE_FILE}.dl" ]; then
+                        touch "${CACHE_FILE}.dl"
+                        (curl -sL "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" -o "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"; rm -f "${CACHE_FILE}.dl") &
+                      fi
+                      break
+                    fi
+                    sleep 2
+                  done
+                  if [ ! -s "$CACHE_FILE" ] && ! echo "$PATH_URL" | grep -q "^/uploads/yt_"; then
+                    echo "Downloading YouTube video $YT_ID via yt-dlp..."
+                    yt-dlp --no-mtime --js-runtimes node --concurrent-fragments 8 -f "18/best[height<=720][ext=mp4]/best[height<=720]" -o "${CACHE_FILE}.tmp" "https://www.youtube.com/watch?v=${YT_ID}" || true
+                    if [ -s "${CACHE_FILE}.tmp" ]; then
+                      mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
+                      curl -s -X POST "https://24.onairplayout.com/api/upload-media" -H "Content-Type: application/octet-stream" -H "x-file-name: yt_${YT_ID}.mp4" --data-binary "@$CACHE_FILE" >/dev/null 2>&1 &
+                    fi
+                  fi
                 fi
               fi
             else
@@ -354,20 +365,8 @@ jobs:
 
                   if [ "$IS_SAME_CLIP" = "false" ]; then
                     if [ -n "$NEW_YT" ] && [ ! -s "/tmp/media_cache/yt_${NEW_YT}.mp4" ]; then
-                      for w_try in 1 2 3 4 5 6 7 8; do
-                        if curl -sI -f "https://24.onairplayout.com/uploads/yt_${NEW_YT}.mp4" >/dev/null 2>&1; then
-                          curl -sL "https://24.onairplayout.com/uploads/yt_${NEW_YT}.mp4" -o "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" && mv "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" "/tmp/media_cache/yt_${NEW_YT}.mp4" || true
-                          break
-                        fi
+                      if ! curl -sI -f "https://24.onairplayout.com/uploads/yt_${NEW_YT}.mp4" >/dev/null 2>&1; then
                         curl -s -X POST "https://24.onairplayout.com/api/youtube/prefetch?ytId=${NEW_YT}" >/dev/null 2>&1 || true
-                        sleep 2
-                      done
-                      if [ ! -s "/tmp/media_cache/yt_${NEW_YT}.mp4" ]; then
-                        yt-dlp --js-runtimes node --concurrent-fragments 8 -f "18/best[height<=720][ext=mp4]/best[height<=720]" -o "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" "https://www.youtube.com/watch?v=${NEW_YT}" || true
-                        if [ -s "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" ]; then
-                          mv "/tmp/media_cache/yt_${NEW_YT}.mp4.tmp" "/tmp/media_cache/yt_${NEW_YT}.mp4"
-                          curl -s -X POST "https://24.onairplayout.com/api/upload-media" -H "Content-Type: application/octet-stream" -H "x-file-name: yt_${NEW_YT}.mp4" --data-binary "@/tmp/media_cache/yt_${NEW_YT}.mp4" >/dev/null 2>&1 &
-                        fi
                       fi
                     fi
                     echo "Seamlessly switching single A/V Clip Feeder to $NAME_NOW ($PATH_NOW) without dropping RTMP..."
