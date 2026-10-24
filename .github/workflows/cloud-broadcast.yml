@@ -136,13 +136,14 @@ jobs:
               esac
               E_FPS=$(echo "$S_CTRL" | jq -r '.encoderConfig.fps // 30' 2>/dev/null | awk '{print int($1)}')
               if [ -z "$E_FPS" ] || [ "$E_FPS" -lt 15 ] || [ "$E_FPS" -gt 60 ]; then E_FPS=30; fi
-              # Keep X11 overlay grab at max 30fps for zero CPU spike, and output at configured bitrate/resolution
+              # Keep X11 overlay grab at max 30fps for zero CPU spike, and output at configured bitrate/resolution/fps
               X11_FPS=$(( E_FPS > 30 ? 30 : E_FPS ))
-              E_GOP=$(( X11_FPS * 2 ))
-              E_VB=$(echo "$S_CTRL" | jq -r '.encoderConfig.videoBitrate // 2000' 2>/dev/null | awk '{print int($1)}')
-              if [ -z "$E_VB" ] || [ "$E_VB" -lt 800 ]; then E_VB=2000; fi
-              ACT_VB=$(( E_VB > 2200 ? 2000 : E_VB ))
-              E_MAX=$(( ACT_VB + 200 ))
+              E_GOP=$(( E_FPS * 2 ))
+              E_VB=$(echo "$S_CTRL" | jq -r '.encoderConfig.videoBitrate // 2500' 2>/dev/null | awk '{print int($1)}')
+              if [ -z "$E_VB" ] || [ "$E_VB" -lt 800 ]; then E_VB=2500; fi
+              if [ "$E_VB" -gt 8000 ]; then E_VB=8000; fi
+              ACT_VB="$E_VB"
+              E_MAX=$(( ACT_VB + 300 ))
               E_BUF=$(( ACT_VB * 2 ))
               E_AB=$(echo "$S_CTRL" | jq -r '.encoderConfig.audioBitrate // 128' 2>/dev/null | awk '{print int($1)}')
               if [ -z "$E_AB" ] || [ "$E_AB" -lt 64 ]; then E_AB=128; fi
@@ -163,7 +164,7 @@ jobs:
                 sleep 0.2
               fi
 
-              echo "[Master-RTMP-Encoder] Starting persistent 24/7 RTMP/UDP stream to $ACT_RTMP @ ${E_RES} ${X11_FPS}fps ${E_VB}kbps..."
+              echo "[Master-RTMP-Encoder] Starting persistent 24/7 RTMP/UDP stream to $ACT_RTMP @ ${E_RES} ${E_FPS}fps ${ACT_VB}kbps (audio ${E_AB}kbps)..."
               if echo "$ACT_RTMP" | grep -q "|"; then
                 TEE_S=""
                 IFS='|' read -ra ADDR <<< "$ACT_RTMP"
@@ -179,9 +180,9 @@ jobs:
                   -probesize 65536 -analyzeduration 200000 -thread_queue_size 2048 -f mpegts -i /tmp/muxed_av.ts \
                   -thread_queue_size 2048 -f x11grab -draw_mouse 0 -framerate "$X11_FPS" -video_size 1280x720 -i :99.0 \
                   -t "$REM_ENC" \
-                  -filter_complex "[0:v]fps=$X11_FPS,setpts=N/($X11_FPS*TB),format=yuv420p[vid];[1:v]fps=$X11_FPS,setpts=N/($X11_FPS*TB),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:format=auto${SCALE_OUT},format=yuv420p[outv];[0:a]aresample=async=1000,asetpts=N/SR/TB[outa]" \
+                  -filter_complex "[0:v]fps=$X11_FPS,setpts=N/($X11_FPS*TB),format=yuv420p[vid];[1:v]fps=$X11_FPS,setpts=N/($X11_FPS*TB),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:format=auto${SCALE_OUT},fps=$E_FPS,format=yuv420p[outv];[0:a]aresample=async=1000,asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
-                  -c:v libx264 -preset superfast -tune zerolatency -pix_fmt yuv420p -b:v "${ACT_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
+                  -c:v libx264 -preset superfast -bf 0 -rc-lookahead 15 -pix_fmt yuv420p -b:v "${ACT_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 44100 \
                   -flags +global_header -f tee "$TEE_S" &
                 M_ENC_PID=$!
@@ -192,9 +193,9 @@ jobs:
                   -probesize 65536 -analyzeduration 200000 -thread_queue_size 2048 -f mpegts -i /tmp/muxed_av.ts \
                   -thread_queue_size 2048 -f x11grab -draw_mouse 0 -framerate "$X11_FPS" -video_size 1280x720 -i :99.0 \
                   -t "$REM_ENC" \
-                  -filter_complex "[0:v]fps=$X11_FPS,setpts=N/($X11_FPS*TB),format=yuv420p[vid];[1:v]fps=$X11_FPS,setpts=N/($X11_FPS*TB),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:format=auto${SCALE_OUT},format=yuv420p[outv];[0:a]aresample=async=1000,asetpts=N/SR/TB[outa]" \
+                  -filter_complex "[0:v]fps=$X11_FPS,setpts=N/($X11_FPS*TB),format=yuv420p[vid];[1:v]fps=$X11_FPS,setpts=N/($X11_FPS*TB),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:format=auto${SCALE_OUT},fps=$E_FPS,format=yuv420p[outv];[0:a]aresample=async=1000,asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
-                  -c:v libx264 -preset superfast -tune zerolatency -pix_fmt yuv420p -b:v "${ACT_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
+                  -c:v libx264 -preset superfast -bf 0 -rc-lookahead 15 -pix_fmt yuv420p -b:v "${ACT_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 44100 \
                   -f "$OUT_FMT" "$ACT_RTMP" &
                 M_ENC_PID=$!
