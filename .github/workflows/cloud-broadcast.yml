@@ -265,11 +265,11 @@ jobs:
             # Query current program state & playlist from 24.onairplayout.com (worker=1 auto-resolves to next Cloud playlist item if Local PC file is selected)
             STATE_JSON=$(curl -s "https://24.onairplayout.com/api/program/state?uid=op_1790161020557&worker=1" 2>/dev/null || echo "{}")
             SETTINGS_JSON=$(curl -s "https://24.onairplayout.com/api/operator/settings?uid=op_1790161020557" 2>/dev/null || echo "{}")
-            PL_LEN=$(echo "$SETTINGS_JSON" | jq -r '.settings.playlist | length // 1' 2>/dev/null | awk '{print int($1)}')
-            if [ -z "$PL_LEN" ] || [ "$PL_LEN" -lt 1 ]; then PL_LEN=1; fi
+            PL_LEN=$(echo "$SETTINGS_JSON" | jq -r '.settings.playlist | length // 0' 2>/dev/null | awk '{print int($1)}')
+            if [ -z "$PL_LEN" ] || [ "$PL_LEN" -lt 0 ]; then PL_LEN=0; fi
 
-            VIDEO_NAME=$(echo "$STATE_JSON" | jq -r '.programItem.name // "Elite_Force_2026_S01E01_720p_HD.mp4"' 2>/dev/null || echo "Elite_Force_2026_S01E01_720p_HD.mp4")
-            if [ -z "$VIDEO_NAME" ] || [ "$VIDEO_NAME" = "null" ]; then VIDEO_NAME="Elite_Force_2026_S01E01_720p_HD.mp4"; fi
+            VIDEO_NAME=$(echo "$STATE_JSON" | jq -r '.programItem.name // empty' 2>/dev/null || echo "")
+            if [ "$VIDEO_NAME" = "null" ] || [ "$PL_LEN" -eq 0 ]; then VIDEO_NAME=""; fi
             HF_URL=$(echo "$STATE_JSON" | jq -r '.programItem.hfResolveUrl // empty' 2>/dev/null || echo "")
             PATH_URL=$(echo "$STATE_JSON" | jq -r '.programItem.path // empty' 2>/dev/null || echo "")
             DURATION_VAL=$(echo "$STATE_JSON" | jq -r '.programItem.duration // 1919' 2>/dev/null | awk '{print int($1)}')
@@ -282,85 +282,88 @@ jobs:
               TIMECODE=0
             fi
 
-            # Detect YouTube ID if PATH_URL or HF_URL is a YouTube link or cached yt_<id>.mp4
             YT_ID=""
-            if echo "$PATH_URL" | grep -qiE "youtube|youtu\.be"; then
-              YT_ID=$(echo "$PATH_URL" | sed -nE 's/.*(v=|embed\/|youtu\.be\/|shorts\/|live\/)([a-zA-Z0-9_-]{11}).*/\2/p' | head -n 1)
-            elif echo "$PATH_URL" | grep -q "/uploads/yt_"; then
-              YT_ID=$(echo "$PATH_URL" | sed -nE 's/.*\/uploads\/yt_([a-zA-Z0-9_-]{11})\.mp4.*/\1/p' | head -n 1)
-            fi
+            INPUT_SOURCE=""
+            if [ -n "$VIDEO_NAME" ]; then
+              # Detect YouTube ID if PATH_URL or HF_URL is a YouTube link or cached yt_<id>.mp4
+              if echo "$PATH_URL" | grep -qiE "youtube|youtu\.be"; then
+                YT_ID=$(echo "$PATH_URL" | sed -nE 's/.*(v=|embed\/|youtu\.be\/|shorts\/|live\/)([a-zA-Z0-9_-]{11}).*/\2/p' | head -n 1)
+              elif echo "$PATH_URL" | grep -q "/uploads/yt_"; then
+                YT_ID=$(echo "$PATH_URL" | sed -nE 's/.*\/uploads\/yt_([a-zA-Z0-9_-]{11})\.mp4.*/\1/p' | head -n 1)
+              fi
 
-            if [ -n "$YT_ID" ]; then
-              CACHE_FILE="/tmp/media_cache/yt_${YT_ID}.mp4"
-              if [ ! -s "$CACHE_FILE" ]; then
-                if curl -sI -f "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" >/dev/null 2>&1; then
-                  PATH_URL="/uploads/yt_${YT_ID}.mp4"
-                  if [ ! -f "${CACHE_FILE}.dl" ]; then
-                    touch "${CACHE_FILE}.dl"
-                    (curl -sL "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" -o "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"; rm -f "${CACHE_FILE}.dl") &
-                  fi
-                else
-                  curl -s -X POST "https://24.onairplayout.com/api/youtube/prefetch?ytId=${YT_ID}" >/dev/null 2>&1 || true
-                  for w_try in 1 2 3 4 5; do
-                    if curl -sI -f "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" >/dev/null 2>&1; then
-                      PATH_URL="/uploads/yt_${YT_ID}.mp4"
-                      if [ ! -f "${CACHE_FILE}.dl" ]; then
-                        touch "${CACHE_FILE}.dl"
-                        (curl -sL "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" -o "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"; rm -f "${CACHE_FILE}.dl") &
-                      fi
-                      break
+              if [ -n "$YT_ID" ]; then
+                CACHE_FILE="/tmp/media_cache/yt_${YT_ID}.mp4"
+                if [ ! -s "$CACHE_FILE" ]; then
+                  if curl -sI -f "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" >/dev/null 2>&1; then
+                    PATH_URL="/uploads/yt_${YT_ID}.mp4"
+                    if [ ! -f "${CACHE_FILE}.dl" ]; then
+                      touch "${CACHE_FILE}.dl"
+                      (curl -sL "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" -o "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"; rm -f "${CACHE_FILE}.dl") &
                     fi
-                    sleep 2
-                  done
-                  if [ ! -s "$CACHE_FILE" ] && ! echo "$PATH_URL" | grep -q "^/uploads/yt_"; then
-                    echo "Downloading YouTube video $YT_ID via yt-dlp..."
-                    yt-dlp --no-mtime --js-runtimes node --concurrent-fragments 8 -f "18/best[height<=720][ext=mp4]/best[height<=720]" -o "${CACHE_FILE}.tmp" "https://www.youtube.com/watch?v=${YT_ID}" || true
-                    if [ -s "${CACHE_FILE}.tmp" ]; then
-                      mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
-                      curl -s -X POST "https://24.onairplayout.com/api/upload-media" -H "Content-Type: application/octet-stream" -H "x-file-name: yt_${YT_ID}.mp4" --data-binary "@$CACHE_FILE" >/dev/null 2>&1 &
+                  else
+                    curl -s -X POST "https://24.onairplayout.com/api/youtube/prefetch?ytId=${YT_ID}" >/dev/null 2>&1 || true
+                    for w_try in 1 2 3 4 5; do
+                      if curl -sI -f "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" >/dev/null 2>&1; then
+                        PATH_URL="/uploads/yt_${YT_ID}.mp4"
+                        if [ ! -f "${CACHE_FILE}.dl" ]; then
+                          touch "${CACHE_FILE}.dl"
+                          (curl -sL "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" -o "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"; rm -f "${CACHE_FILE}.dl") &
+                        fi
+                        break
+                      fi
+                      sleep 2
+                    done
+                    if [ ! -s "$CACHE_FILE" ] && ! echo "$PATH_URL" | grep -q "^/uploads/yt_"; then
+                      echo "Downloading YouTube video $YT_ID via yt-dlp..."
+                      yt-dlp --no-mtime --js-runtimes node --concurrent-fragments 8 -f "18/best[height<=720][ext=mp4]/best[height<=720]" -o "${CACHE_FILE}.tmp" "https://www.youtube.com/watch?v=${YT_ID}" || true
+                      if [ -s "${CACHE_FILE}.tmp" ]; then
+                        mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
+                        curl -s -X POST "https://24.onairplayout.com/api/upload-media" -H "Content-Type: application/octet-stream" -H "x-file-name: yt_${YT_ID}.mp4" --data-binary "@$CACHE_FILE" >/dev/null 2>&1 &
+                      fi
                     fi
                   fi
                 fi
+              else
+                SAFE_CACHE_NAME=$(echo "$VIDEO_NAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
+                CACHE_FILE="/tmp/media_cache/${SAFE_CACHE_NAME}"
               fi
-            else
-              SAFE_CACHE_NAME=$(echo "$VIDEO_NAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
-              CACHE_FILE="/tmp/media_cache/${SAFE_CACHE_NAME}"
-            fi
 
-            if echo "$PATH_URL" | grep -q "^/uploads/"; then
-              REMOTE_URL="https://24.onairplayout.com${PATH_URL}?_v=$(date +%s)"
-            elif [ -n "$HF_URL" ] && [ "$HF_URL" != "null" ] && ! echo "$HF_URL" | grep -q "huggingface.co/buckets/"; then
-              if echo "$HF_URL" | grep -q "?"; then
-                REMOTE_URL="${HF_URL}&_v=$(date +%s)"
-              else
-                REMOTE_URL="${HF_URL}?_v=$(date +%s)"
-              fi
-            elif echo "$VIDEO_NAME" | grep -qi "Elite"; then
-              REMOTE_URL="https://24.onairplayout.com/uploads/Elite_Force_2026_S01E01_720p_HD.mp4?_v=$(date +%s)"
-            elif [ -n "$PATH_URL" ] && [ "$PATH_URL" != "null" ]; then
-              if echo "$PATH_URL" | grep -q "^http"; then
-                REMOTE_URL="$PATH_URL"
-              elif echo "$PATH_URL" | grep -q "?"; then
-                REMOTE_URL="https://24.onairplayout.com${PATH_URL}&_v=$(date +%s)"
-              else
+              if echo "$PATH_URL" | grep -q "^/uploads/"; then
                 REMOTE_URL="https://24.onairplayout.com${PATH_URL}?_v=$(date +%s)"
+              elif [ -n "$HF_URL" ] && [ "$HF_URL" != "null" ] && ! echo "$HF_URL" | grep -q "huggingface.co/buckets/"; then
+                if echo "$HF_URL" | grep -q "?"; then
+                  REMOTE_URL="${HF_URL}&_v=$(date +%s)"
+                else
+                  REMOTE_URL="${HF_URL}?_v=$(date +%s)"
+                fi
+              elif echo "$VIDEO_NAME" | grep -qi "Elite"; then
+                REMOTE_URL="https://24.onairplayout.com/uploads/Elite_Force_2026_S01E01_720p_HD.mp4?_v=$(date +%s)"
+              elif [ -n "$PATH_URL" ] && [ "$PATH_URL" != "null" ]; then
+                if echo "$PATH_URL" | grep -q "^http"; then
+                  REMOTE_URL="$PATH_URL"
+                elif echo "$PATH_URL" | grep -q "?"; then
+                  REMOTE_URL="https://24.onairplayout.com${PATH_URL}&_v=$(date +%s)"
+                else
+                  REMOTE_URL="https://24.onairplayout.com${PATH_URL}?_v=$(date +%s)"
+                fi
+              else
+                REMOTE_URL="https://24.onairplayout.com/uploads/${SAFE_CACHE_NAME}?_v=$(date +%s)"
               fi
-            else
-              REMOTE_URL="$DEFAULT_HF_VIDEO"
-            fi
 
-            if [ -s "$CACHE_FILE" ] && ! ffprobe -v error "$CACHE_FILE" >/dev/null 2>&1; then
-              rm -f "$CACHE_FILE"
-            fi
-
-            if [ -s "$CACHE_FILE" ]; then
-              INPUT_SOURCE="$CACHE_FILE"
-              REAL_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$CACHE_FILE" 2>/dev/null | awk '{print int($1)}')
-              if [ -n "$REAL_DUR" ] && [ "$REAL_DUR" -gt 5 ]; then
-                DURATION_VAL="$REAL_DUR"
+              if [ -s "$CACHE_FILE" ] && ! ffprobe -v error "$CACHE_FILE" >/dev/null 2>&1; then
+                rm -f "$CACHE_FILE"
               fi
-            else
-              INPUT_SOURCE="$REMOTE_URL"
+
+              if [ -s "$CACHE_FILE" ]; then
+                INPUT_SOURCE="$CACHE_FILE"
+                REAL_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$CACHE_FILE" 2>/dev/null | awk '{print int($1)}')
+                if [ -n "$REAL_DUR" ] && [ "$REAL_DUR" -gt 5 ]; then
+                  DURATION_VAL="$REAL_DUR"
+                fi
+              else
+                INPUT_SOURCE="$REMOTE_URL"
+              fi
             fi
 
             FF_START_TS=$(date +%s)
@@ -368,9 +371,9 @@ jobs:
             rm -f /tmp/clip_switched_by_watcher
 
             # Background watcher:
-            # 1) Checks if active clip changed BEFORE posting timecode (preventing stale timecode overwrite & double advanceNext!)
-            # 2) Pre-caches ALL queued playlist items + newly uploaded custom fonts in advance
-            # 3) On video switch, gracefully stops clip_feeder (keeping Master RTMP Encoder 100% connected!)
+            # 1) Checks if active clip changed (or playlist emptied/populated) BEFORE posting timecode
+            # 2) Pre-caches ALL queued playlist items in advance
+            # 3) On video switch or playlist clear, gracefully stops clip_feeder (keeping Master RTMP Encoder & Tickers 100% live!)
             (
               while kill -0 $$ 2>/dev/null; do
                 sleep 2
@@ -384,9 +387,31 @@ jobs:
                 fi
 
                 ST_NOW=$(curl -s "https://24.onairplayout.com/api/program/state?uid=op_1790161020557&worker=1" 2>/dev/null || echo "{}")
+                SET_NOW=$(curl -s "https://24.onairplayout.com/api/operator/settings?uid=op_1790161020557" 2>/dev/null || echo "{}")
+                PL_LEN_NOW=$(echo "$SET_NOW" | jq -r '.settings.playlist | length // 0' 2>/dev/null | awk '{print int($1)}')
+                if [ -z "$PL_LEN_NOW" ] || [ "$PL_LEN_NOW" -lt 0 ]; then PL_LEN_NOW=0; fi
                 NAME_NOW=$(echo "$ST_NOW" | jq -r '.programItem.name // empty' 2>/dev/null || echo "")
                 PATH_NOW=$(echo "$ST_NOW" | jq -r '.programItem.path // empty' 2>/dev/null || echo "")
-                if [ -n "$NAME_NOW" ] && [ "$NAME_NOW" != "null" ]; then
+                if [ "$NAME_NOW" = "null" ] || [ "$PL_LEN_NOW" -eq 0 ]; then NAME_NOW=""; fi
+
+                # Case A: Playlist was empty (no video) and operator added a video -> switch from black screen to video!
+                if [ -z "$VIDEO_NAME" ] && [ -n "$NAME_NOW" ]; then
+                  touch /tmp/clip_switched_by_watcher
+                  echo "Playlist populated with $NAME_NOW -> switching from Tickers-Only Black Screen to Video!"
+                  if [ -f /tmp/feeder_av.pid ]; then kill -TERM $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
+                  break
+                fi
+
+                # Case B: Video was playing and operator emptied the playlist -> stop video and switch to Tickers-Only Black Screen!
+                if [ -n "$VIDEO_NAME" ] && [ -z "$NAME_NOW" ]; then
+                  touch /tmp/clip_switched_by_watcher
+                  echo "Playlist cleared -> stopping video and switching to Tickers-Only Black Screen!"
+                  if [ -f /tmp/feeder_av.pid ]; then kill -TERM $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
+                  break
+                fi
+
+                # Case C: Video changed to a different video
+                if [ -n "$VIDEO_NAME" ] && [ -n "$NAME_NOW" ]; then
                   NEW_YT=""
                   if echo "$PATH_NOW" | grep -qiE "youtube|youtu\.be"; then
                     NEW_YT=$(echo "$PATH_NOW" | sed -nE 's/.*(v=|embed\/|youtu\.be\/|shorts\/|live\/)([a-zA-Z0-9_-]{11}).*/\2/p' | head -n 1)
@@ -416,22 +441,21 @@ jobs:
                   fi
                 fi
 
-                NOW_TS=$(date +%s)
-                ELAPSED=$(( NOW_TS - FF_START_TS ))
-                RAW_TC=$(( TIMECODE + ELAPSED ))
-                if [ "$PL_LEN" -le 1 ] && [ "$DURATION_VAL" -gt 5 ]; then
-                  LIVE_TC=$(( RAW_TC % DURATION_VAL ))
-                else
-                  LIVE_TC=$RAW_TC
+                if [ -n "$VIDEO_NAME" ]; then
+                  NOW_TS=$(date +%s)
+                  ELAPSED=$(( NOW_TS - FF_START_TS ))
+                  RAW_TC=$(( TIMECODE + ELAPSED ))
+                  if [ "$PL_LEN" -le 1 ] && [ "$DURATION_VAL" -gt 5 ]; then
+                    LIVE_TC=$(( RAW_TC % DURATION_VAL ))
+                  else
+                    LIVE_TC=$RAW_TC
+                  fi
+                  curl -s -X POST "https://24.onairplayout.com/api/program/live-timecode?uid=op_1790161020557&from=worker" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"uid\":\"op_1790161020557\",\"timecode\":$LIVE_TC,\"fromWorker\":true,\"clipName\":\"$SAFE_CUR_CLIP\",\"ytId\":\"$YT_ID\"}" >/dev/null 2>&1 || true
                 fi
-                curl -s -X POST "https://24.onairplayout.com/api/program/live-timecode?uid=op_1790161020557&from=worker" \
-                  -H "Content-Type: application/json" \
-                  -d "{\"uid\":\"op_1790161020557\",\"timecode\":$LIVE_TC,\"fromWorker\":true,\"clipName\":\"$SAFE_CUR_CLIP\",\"ytId\":\"$YT_ID\"}" >/dev/null 2>&1 || true
 
-                # Pre-cache any queued YouTube or MP4 items in the playlist in the background before their turn!
-                SET_NOW=$(curl -s "https://24.onairplayout.com/api/operator/settings?uid=op_1790161020557" 2>/dev/null || echo "{}")
-                PL_LEN_NOW=$(echo "$SET_NOW" | jq -r '.settings.playlist | length // 1' 2>/dev/null | awk '{print int($1)}')
-                if [ -n "$PL_LEN_NOW" ] && [ "$PL_LEN_NOW" -gt 0 ]; then
+                if [ "$PL_LEN_NOW" -gt 0 ]; then
                   PL_LEN=$PL_LEN_NOW
                   for Q_PATH in $(echo "$SET_NOW" | jq -r '.settings.playlist[]?.path // empty' 2>/dev/null); do
                     if echo "$Q_PATH" | grep -q "^/uploads/"; then
@@ -448,32 +472,46 @@ jobs:
             ) &
             WATCHER_PID=$!
 
-            echo "Feeding 100% Lip-Synced Video+Audio Clip: $VIDEO_NAME (Source: $INPUT_SOURCE) @ ${ENC_FPS}fps starting at ${TIMECODE}s..."
-            RECON_FLAGS=""
-            if echo "$INPUT_SOURCE" | grep -qiE "^https?://"; then
-              RECON_FLAGS="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+            if [ -z "$VIDEO_NAME" ]; then
+              echo "Playlist is empty -> Feeding Black Canvas + Silent Audio while Live Tickers & Overlays remain ON AIR..."
+              ffmpeg -y -hide_banner -loglevel warning -nostats -fflags +genpts \
+                -re -f lavfi -i "color=c=black:s=1280x720:r=$ENC_FPS" \
+                -re -f lavfi -i "anullsrc=r=44100:cl=stereo" \
+                -map 0:v:0 -map 1:a:0 \
+                -c:v mpeg2video -q:v 4 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
+                -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
+                -mpegts_flags +resend_headers+pat_pmt_at_frames \
+                -f mpegts /tmp/muxed_av.ts &
+              FEED_AV_PID=$!
+              echo $FEED_AV_PID > /tmp/feeder_av.pid
+              wait $FEED_AV_PID 2>/dev/null || true
+            else
+              echo "Feeding 100% Lip-Synced Video+Audio Clip: $VIDEO_NAME (Source: $INPUT_SOURCE) @ ${ENC_FPS}fps starting at ${TIMECODE}s..."
+              RECON_FLAGS=""
+              if echo "$INPUT_SOURCE" | grep -qiE "^https?://"; then
+                RECON_FLAGS="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+              fi
+              ffmpeg -y -hide_banner -loglevel warning -nostats -fflags +genpts \
+                $RECON_FLAGS \
+                -accurate_seek -ss "$TIMECODE" -re -i "$INPUT_SOURCE" \
+                -map 0:v:0 -map 0:a:0? \
+                -vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=$ENC_FPS,format=yuv420p" \
+                -af "adelay=0|0,aresample=44100:async=1:first_pts=0" \
+                -shortest \
+                -c:v mpeg2video -q:v 2 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
+                -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
+                -mpegts_flags +resend_headers+pat_pmt_at_frames \
+                -f mpegts /tmp/muxed_av.ts &
+              FEED_AV_PID=$!
+              echo $FEED_AV_PID > /tmp/feeder_av.pid
+              wait $FEED_AV_PID 2>/dev/null || true
             fi
-            ffmpeg -y -hide_banner -loglevel warning -nostats -fflags +genpts \
-              $RECON_FLAGS \
-              -accurate_seek -ss "$TIMECODE" -re -i "$INPUT_SOURCE" \
-              -map 0:v:0 -map 0:a:0? \
-              -vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=$ENC_FPS,format=yuv420p" \
-              -af "adelay=0|0,aresample=44100:async=1:first_pts=0" \
-              -shortest \
-              -c:v mpeg2video -q:v 2 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
-              -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
-              -mpegts_flags +resend_headers+pat_pmt_at_frames \
-              -f mpegts /tmp/muxed_av.ts &
-            FEED_AV_PID=$!
-            echo $FEED_AV_PID > /tmp/feeder_av.pid
-
-            wait $FEED_AV_PID 2>/dev/null || true
 
             kill $WATCHER_PID 2>/dev/null || true
             FINAL_ELAPSED=$(( $(date +%s) - FF_START_TS ))
             FINAL_REACHED=$(( TIMECODE + FINAL_ELAPSED ))
-            # Only advance/reset timecode if the clip actually played to its end AND was not already switched by WATCHER_PID!
-            if [ ! -f /tmp/clip_switched_by_watcher ] && [ "$DURATION_VAL" -gt 10 ] && [ "$FINAL_REACHED" -ge $(( DURATION_VAL - 8 )) ]; then
+            # Only advance/reset timecode if a video clip actually played to its end AND was not already switched by WATCHER_PID!
+            if [ -n "$VIDEO_NAME" ] && [ ! -f /tmp/clip_switched_by_watcher ] && [ "$DURATION_VAL" -gt 10 ] && [ "$FINAL_REACHED" -ge $(( DURATION_VAL - 8 )) ]; then
               if [ "$PL_LEN" -gt 1 ]; then
                 curl -s -X POST "https://24.onairplayout.com/api/program/live-timecode?uid=op_1790161020557&from=worker" \
                   -H "Content-Type: application/json" \
