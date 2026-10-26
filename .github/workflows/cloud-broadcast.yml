@@ -351,16 +351,16 @@ jobs:
                 REMOTE_URL="https://24.onairplayout.com/uploads/${SAFE_CACHE_NAME}?_v=$(date +%s)"
               fi
 
-              if [ -s "$CACHE_FILE" ] && ! ffprobe -v error "$CACHE_FILE" >/dev/null 2>&1; then
-                rm -f "$CACHE_FILE"
+              if [ -s "$CACHE_FILE" ]; then
+                REAL_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$CACHE_FILE" 2>/dev/null | awk '{print int($1)}')
+                if [ -z "$REAL_DUR" ] || [ "$REAL_DUR" -lt 5 ]; then
+                  rm -f "$CACHE_FILE"
+                fi
               fi
 
               if [ -s "$CACHE_FILE" ]; then
                 INPUT_SOURCE="$CACHE_FILE"
-                REAL_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$CACHE_FILE" 2>/dev/null | awk '{print int($1)}')
-                if [ -n "$REAL_DUR" ] && [ "$REAL_DUR" -gt 5 ]; then
-                  DURATION_VAL="$REAL_DUR"
-                fi
+                DURATION_VAL="$REAL_DUR"
               else
                 INPUT_SOURCE="$REMOTE_URL"
               fi
@@ -463,7 +463,19 @@ jobs:
                       Q_LOCAL="/tmp/media_cache/${Q_FNAME}"
                       if [ ! -s "$Q_LOCAL" ] && [ ! -f "${Q_LOCAL}.Pre" ]; then
                         touch "${Q_LOCAL}.Pre"
-                        (curl -sL "https://24.onairplayout.com${Q_PATH}" -o "${Q_LOCAL}.tmp" && mv "${Q_LOCAL}.tmp" "$Q_LOCAL"; rm -f "${Q_LOCAL}.Pre") &
+                        (
+                          if curl -sfL "https://24.onairplayout.com${Q_PATH}" -o "${Q_LOCAL}.tmp"; then
+                            TMP_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${Q_LOCAL}.tmp" 2>/dev/null | awk '{print int($1)}')
+                            if [ -n "$TMP_DUR" ] && [ "$TMP_DUR" -ge 5 ]; then
+                              mv "${Q_LOCAL}.tmp" "$Q_LOCAL"
+                            else
+                              rm -f "${Q_LOCAL}.tmp"
+                            fi
+                          else
+                            rm -f "${Q_LOCAL}.tmp"
+                          fi
+                          rm -f "${Q_LOCAL}.Pre"
+                        ) &
                       fi
                     fi
                   done
