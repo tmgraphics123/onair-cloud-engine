@@ -1,4 +1,5 @@
 name: OnAir 24x7 Cloud Broadcast Engine
+run-name: "Broadcast ${{ inputs.rtmp_url || 'live_nadeem' }} (${{ inputs.feed_url || 'op_1790161020557' }})"
 
 on:
   workflow_dispatch:
