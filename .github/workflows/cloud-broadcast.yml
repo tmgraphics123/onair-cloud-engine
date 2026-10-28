@@ -171,7 +171,7 @@ jobs:
                   -f lavfi -i anullsrc=r=44100:cl=stereo \
                   -t 0.8 \
                   -c:v mpeg2video -q:v 2 -g 1 -r 30 -pix_fmt yuv420p \
-                  -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
+                  -c:a mp2 -b:a 384k -ar 44100 -ac 2 \
                   -mpegts_flags +resend_headers+pat_pmt_at_frames \
                   -f mpegts /tmp/muxed_av.ts >/dev/null 2>&1 &
                 SEED_PID=$!
@@ -194,7 +194,7 @@ jobs:
                   -probesize 65536 -analyzeduration 200000 -thread_queue_size 2048 -f mpegts -i /tmp/muxed_av.ts \
                   -thread_queue_size 2048 -f x11grab -draw_mouse 0 -framerate "$X11_FPS" -video_size 1280x720 -i :99.0 \
                   -t "$REM_ENC" \
-                  -filter_complex "[0:v]setpts=(RTCTIME-RTCSTART)/(TB*1000000),format=yuv420p[vid];[1:v]setpts=(RTCTIME-RTCSTART)/(TB*1000000),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:ts_sync_mode=nearest:format=auto${SCALE_OUT},fps=$E_FPS,format=yuv420p[outv];[0:a]asetpts=(RTCTIME-RTCSTART)/(TB*1000000),aresample=44100:async=1000[outa]" \
+                  -filter_complex "[0:v]setpts=(RTCTIME-RTCSTART)/(TB*1000000),format=yuv420p[vid];[1:v]setpts=(RTCTIME-RTCSTART)/(TB*1000000),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:ts_sync_mode=nearest:format=auto${SCALE_OUT},fps=$E_FPS,format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
                   -c:v libx264 -preset superfast -bf 0 -pix_fmt yuv420p -b:v "${ACT_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 44100 \
@@ -207,7 +207,7 @@ jobs:
                   -probesize 65536 -analyzeduration 200000 -thread_queue_size 2048 -f mpegts -i /tmp/muxed_av.ts \
                   -thread_queue_size 2048 -f x11grab -draw_mouse 0 -framerate "$X11_FPS" -video_size 1280x720 -i :99.0 \
                   -t "$REM_ENC" \
-                  -filter_complex "[0:v]setpts=(RTCTIME-RTCSTART)/(TB*1000000),format=yuv420p[vid];[1:v]setpts=(RTCTIME-RTCSTART)/(TB*1000000),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:ts_sync_mode=nearest:format=auto${SCALE_OUT},fps=$E_FPS,format=yuv420p[outv];[0:a]asetpts=(RTCTIME-RTCSTART)/(TB*1000000),aresample=44100:async=1000[outa]" \
+                  -filter_complex "[0:v]setpts=(RTCTIME-RTCSTART)/(TB*1000000),format=yuv420p[vid];[1:v]setpts=(RTCTIME-RTCSTART)/(TB*1000000),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:ts_sync_mode=nearest:format=auto${SCALE_OUT},fps=$E_FPS,format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
                   -c:v libx264 -preset superfast -bf 0 -pix_fmt yuv420p -b:v "${ACT_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 44100 \
@@ -501,7 +501,7 @@ jobs:
                 -f lavfi -i "anullsrc=r=44100:cl=stereo" \
                 -map 0:v:0 -map 1:a:0 \
                 -c:v mpeg2video -q:v 4 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
-                -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
+                -c:a mp2 -b:a 384k -ar 44100 -ac 2 \
                 -mpegts_flags +resend_headers+pat_pmt_at_frames \
                 -f mpegts /tmp/muxed_av.ts &
               FEED_AV_PID=$!
@@ -518,10 +518,10 @@ jobs:
                 -noaccurate_seek -ss "$TIMECODE" -re -i "$INPUT_SOURCE" \
                 -map 0:v:0 -map 0:a:0? \
                 -vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=$ENC_FPS,format=yuv420p" \
-                -af "adelay=0|0,aresample=44100:async=1:first_pts=0" \
+                -af "aresample=44100" \
                 -shortest \
                 -c:v mpeg2video -q:v 2 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
-                -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
+                -c:a mp2 -b:a 384k -ar 44100 -ac 2 \
                 -mpegts_flags +resend_headers+pat_pmt_at_frames \
                 -f mpegts /tmp/muxed_av.ts &
               FEED_AV_PID=$!
