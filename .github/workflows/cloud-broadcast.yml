@@ -7,7 +7,7 @@ on:
       feed_url:
         description: 'Program Output Feed URL'
         required: false
-        default: 'https://24.onairplayout.com/?view=program&uid=op_1790161020557&overlay_only=1'
+        default: 'http://84.235.248.136/?view=program&uid=op_1790161020557&overlay_only=1'
       rtmp_url:
         description: 'RTMP Destination URL(s) (pipe-separated for multiple)'
         required: false
@@ -45,19 +45,19 @@ jobs:
           fi
           mkdir -p ~/.local/share/fonts
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends fonts-noto-cjk fonts-noto-core fonts-hosny-amiri 2>/dev/null || true
-          curl -sL --max-time 25 "https://24.onairplayout.com/fonts/Jameel%20Noori%20Nastaleeq.ttf" -o ~/.local/share/fonts/JameelNooriNastaleeq.ttf || true
+          curl -sL --max-time 25 "http://84.235.248.136/fonts/Jameel%20Noori%20Nastaleeq.ttf" -o ~/.local/share/fonts/JameelNooriNastaleeq.ttf || true
           curl -sL --max-time 15 "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf" -o ~/.local/share/fonts/Amiri-Bold.ttf || true
           curl -sL --max-time 15 "https://github.com/google/fonts/raw/main/ofl/notonastaliqurdu/NotoNastaliqUrdu%5Bwght%5D.ttf" -o ~/.local/share/fonts/NotoNastaliqUrdu.ttf || true
           curl -sL --max-time 15 "https://github.com/google/fonts/raw/main/ofl/notosansdevanagari/NotoSansDevanagari%5Bwdth,wght%5D.ttf" -o ~/.local/share/fonts/NotoSansDevanagari.ttf || true
           for F_BN in JameelNooriNastaleeq.ttf NotoNastaliqUrdu.ttf Amiri-Bold.ttf Cairo-Bold.ttf Tajawal-Bold.ttf Almarai-Bold.ttf Vazirmatn-Bold.ttf NotoNaskhArabic-Bold.ttf NotoSansDevanagari.ttf Hind-Bold.ttf Poppins-Bold.ttf NotoSansBengali-Bold.ttf Outfit-Bold.ttf Montserrat-Bold.ttf Roboto-Bold.ttf; do
-            curl -sL --max-time 15 "https://24.onairplayout.com/uploads/fonts/${F_BN}" -o "$HOME/.local/share/fonts/${F_BN}" || true
+            curl -sL --max-time 15 "http://84.235.248.136/uploads/fonts/${F_BN}" -o "$HOME/.local/share/fonts/${F_BN}" || true
           done
           for F_BN in JameelNooriNastaleeq.ttf NotoNastaliqUrdu.ttf Gulzar-Regular.ttf Cairo-Bold.ttf Tajawal-Bold.ttf Almarai-Bold.ttf Vazirmatn-Bold.ttf NotoNaskhArabic-Bold.ttf ElMessiri-Bold.ttf Amiri-Bold.ttf NotoSansDevanagari.ttf Hind-Bold.ttf NotoSansBengali-Bold.ttf Outfit-Bold.ttf Inter-Bold.ttf Oswald-Bold.ttf BebasNeue-Regular.ttf Montserrat-Bold.ttf Poppins-Bold.ttf Roboto-Bold.ttf; do
-            curl -sL --max-time 15 "https://24.onairplayout.com/uploads/fonts/${F_BN}" -o "$HOME/.local/share/fonts/${F_BN}" || true
+            curl -sL --max-time 15 "http://84.235.248.136/uploads/fonts/${F_BN}" -o "$HOME/.local/share/fonts/${F_BN}" || true
           done
-          for F_URL in $(curl -s "https://24.onairplayout.com/api/fonts/list" 2>/dev/null | jq -r '.customFonts[]?.url // empty' 2>/dev/null); do
+          for F_URL in $(curl -s "http://84.235.248.136/api/fonts/list" 2>/dev/null | jq -r '.customFonts[]?.url // empty' 2>/dev/null); do
             F_BN=$(basename "$F_URL")
-            [ -s "$HOME/.local/share/fonts/${F_BN}" ] || curl -sL --max-time 15 "https://24.onairplayout.com${F_URL}" -o "$HOME/.local/share/fonts/${F_BN}" || true
+            [ -s "$HOME/.local/share/fonts/${F_BN}" ] || curl -sL --max-time 15 "http://84.235.248.136${F_URL}" -o "$HOME/.local/share/fonts/${F_BN}" || true
           done
           fc-cache -f ~/.local/share/fonts || true
           sudo curl -sL --max-time 15 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && sudo chmod a+rx /usr/local/bin/yt-dlp || true
@@ -65,7 +65,7 @@ jobs:
       - name: Launch 24/7 Headless Broadcast Studio (Local NVMe SSD + YouTube Bot-Bypass + Dynamic Encoder Settings)
         env:
           TZ: Asia/Karachi
-          FEED_URL: ${{ inputs.feed_url || 'https://24.onairplayout.com/?view=program&uid=op_1790161020557&overlay_only=1' }}
+          FEED_URL: ${{ inputs.feed_url || 'http://84.235.248.136/?view=program&uid=op_1790161020557&overlay_only=1' }}
           RTMP_URL: ${{ inputs.rtmp_url || 'rtmp://rtmp.onairplayout.com:1935/live/live_nadeem' }}
           DURATION_SEC: ${{ inputs.duration_sec || '20700' }}
         run: |
@@ -82,11 +82,11 @@ jobs:
           mkdir -p /tmp/media_cache
           CB_TS=$(date +%s)
           # Pre-cache active uploads to local NVMe SSD using .tmp + cache-buster so Cloudflare Edge never serves stale cached files
-          (curl -sL "https://24.onairplayout.com/uploads/BAHAAR_-The_Spirit_Of_Kashmir__Cover__By_Adnan_Manzoor_-_Qalaam_Studio.mp4?_v=${CB_TS}" -o "/tmp/media_cache/bahaar.tmp" && mv "/tmp/media_cache/bahaar.tmp" "/tmp/media_cache/BAHAAR_-The_Spirit_Of_Kashmir__Cover__By_Adnan_Manzoor_-_Qalaam_Studio.mp4") &
-          (curl -sL "https://24.onairplayout.com/uploads/USP_MULTAN_15_Anniversary.mp4?_v=${CB_TS}" -o "/tmp/media_cache/usp.tmp" && mv "/tmp/media_cache/usp.tmp" "/tmp/media_cache/USP_MULTAN_15_Anniversary.mp4") &
-          (curl -sL "https://24.onairplayout.com/uploads/yt_cAd8cvqRi9g.mp4?_v=${CB_TS}" -o "/tmp/media_cache/yt1.tmp" && mv "/tmp/media_cache/yt1.tmp" "/tmp/media_cache/yt_cAd8cvqRi9g.mp4") &
-          (curl -sL "https://24.onairplayout.com/uploads/yt_P4zyZAl30To.mp4?_v=${CB_TS}" -o "/tmp/media_cache/yt2.tmp" && mv "/tmp/media_cache/yt2.tmp" "/tmp/media_cache/yt_P4zyZAl30To.mp4") &
-          DEFAULT_HF_VIDEO="https://24.onairplayout.com/uploads/Elite_Force_2026_S01E01_720p_HD.mp4?_v=${CB_TS}"
+          (curl -sL "http://84.235.248.136/uploads/BAHAAR_-The_Spirit_Of_Kashmir__Cover__By_Adnan_Manzoor_-_Qalaam_Studio.mp4?_v=${CB_TS}" -o "/tmp/media_cache/bahaar.tmp" && mv "/tmp/media_cache/bahaar.tmp" "/tmp/media_cache/BAHAAR_-The_Spirit_Of_Kashmir__Cover__By_Adnan_Manzoor_-_Qalaam_Studio.mp4") &
+          (curl -sL "http://84.235.248.136/uploads/USP_MULTAN_15_Anniversary.mp4?_v=${CB_TS}" -o "/tmp/media_cache/usp.tmp" && mv "/tmp/media_cache/usp.tmp" "/tmp/media_cache/USP_MULTAN_15_Anniversary.mp4") &
+          (curl -sL "http://84.235.248.136/uploads/yt_cAd8cvqRi9g.mp4?_v=${CB_TS}" -o "/tmp/media_cache/yt1.tmp" && mv "/tmp/media_cache/yt1.tmp" "/tmp/media_cache/yt_cAd8cvqRi9g.mp4") &
+          (curl -sL "http://84.235.248.136/uploads/yt_P4zyZAl30To.mp4?_v=${CB_TS}" -o "/tmp/media_cache/yt2.tmp" && mv "/tmp/media_cache/yt2.tmp" "/tmp/media_cache/yt_P4zyZAl30To.mp4") &
+          DEFAULT_HF_VIDEO="http://84.235.248.136/uploads/Elite_Force_2026_S01E01_720p_HD.mp4?_v=${CB_TS}"
           (
             curl -sL "$DEFAULT_HF_VIDEO" -o "/tmp/media_cache/elite_force.mp4.tmp" && mv "/tmp/media_cache/elite_force.mp4.tmp" "/tmp/media_cache/Elite_Force_2026_S01E01_720p_HD.mp4"
           ) &
@@ -132,7 +132,7 @@ jobs:
             while [ $(date +%s) -lt $END_TIME ]; do
               REM_ENC=$(( END_TIME - $(date +%s) ))
               if [ $REM_ENC -le 5 ]; then break; fi
-              S_CTRL=$(curl -s "https://24.onairplayout.com/api/stream/status?uid=${OP_UID}" 2>/dev/null || echo '{"active":true}')
+              S_CTRL=$(curl -s "http://84.235.248.136/api/stream/status?uid=${OP_UID}" 2>/dev/null || echo '{"active":true}')
               S_ACT=$(echo "$S_CTRL" | jq -r '.active // true' 2>/dev/null || echo "true")
               if [ "$S_ACT" = "false" ]; then
                 sleep 2
@@ -219,7 +219,7 @@ jobs:
               (
                 while kill -0 "$M_ENC_PID" 2>/dev/null; do
                   sleep 3
-                  CHK_C=$(curl -s "https://24.onairplayout.com/api/stream/status?uid=${OP_UID}" 2>/dev/null || echo "")
+                  CHK_C=$(curl -s "http://84.235.248.136/api/stream/status?uid=${OP_UID}" 2>/dev/null || echo "")
                   if [ -z "$CHK_C" ]; then continue; fi
                   CHK_ACT=$(echo "$CHK_C" | jq -r '.active // true' 2>/dev/null || echo "true")
                   if [ "$CHK_ACT" = "false" ]; then
@@ -262,7 +262,7 @@ jobs:
             if [ $REMAINING -le 5 ]; then break; fi
 
             # Check stream status & operator Encoder Config from 24.onairplayout.com/api/stream/status
-            STREAM_CTRL=$(curl -s "https://24.onairplayout.com/api/stream/status?uid=${OP_UID}" 2>/dev/null || echo '{"active":true}')
+            STREAM_CTRL=$(curl -s "http://84.235.248.136/api/stream/status?uid=${OP_UID}" 2>/dev/null || echo '{"active":true}')
             IS_ACTIVE=$(echo "$STREAM_CTRL" | jq -r '.active // true' 2>/dev/null || echo "true")
             if [ "$IS_ACTIVE" = "false" ]; then
               pkill -f "virtual_speaker.monitor" || true
@@ -274,8 +274,8 @@ jobs:
             if [ -z "$ENC_FPS" ] || [ "$ENC_FPS" -lt 15 ] || [ "$ENC_FPS" -gt 30 ]; then ENC_FPS=30; fi
 
             # Query current program state & playlist from 24.onairplayout.com (worker=1 auto-resolves to next Cloud playlist item if Local PC file is selected)
-            STATE_JSON=$(curl -s "https://24.onairplayout.com/api/program/state?uid=${OP_UID}&worker=1" 2>/dev/null || echo "{}")
-            SETTINGS_JSON=$(curl -s "https://24.onairplayout.com/api/operator/settings?uid=${OP_UID}" 2>/dev/null || echo "{}")
+            STATE_JSON=$(curl -s "http://84.235.248.136/api/program/state?uid=${OP_UID}&worker=1" 2>/dev/null || echo "{}")
+            SETTINGS_JSON=$(curl -s "http://84.235.248.136/api/operator/settings?uid=${OP_UID}" 2>/dev/null || echo "{}")
             PL_LEN=$(echo "$SETTINGS_JSON" | jq -r '.settings.playlist | length // 0' 2>/dev/null | awk '{print int($1)}')
             if [ -z "$PL_LEN" ] || [ "$PL_LEN" -lt 0 ]; then PL_LEN=0; fi
 
@@ -306,20 +306,20 @@ jobs:
               if [ -n "$YT_ID" ]; then
                 CACHE_FILE="/tmp/media_cache/yt_${YT_ID}.mp4"
                 if [ ! -s "$CACHE_FILE" ]; then
-                  if curl -sI -f "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" >/dev/null 2>&1; then
+                  if curl -sI -f "http://84.235.248.136/uploads/yt_${YT_ID}.mp4" >/dev/null 2>&1; then
                     PATH_URL="/uploads/yt_${YT_ID}.mp4"
                     if [ ! -f "${CACHE_FILE}.dl" ]; then
                       touch "${CACHE_FILE}.dl"
-                      (curl -sL "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" -o "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"; rm -f "${CACHE_FILE}.dl") &
+                      (curl -sL "http://84.235.248.136/uploads/yt_${YT_ID}.mp4" -o "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"; rm -f "${CACHE_FILE}.dl") &
                     fi
                   else
-                    curl -s -X POST "https://24.onairplayout.com/api/youtube/prefetch?ytId=${YT_ID}" >/dev/null 2>&1 || true
+                    curl -s -X POST "http://84.235.248.136/api/youtube/prefetch?ytId=${YT_ID}" >/dev/null 2>&1 || true
                     for w_try in 1 2 3 4 5; do
-                      if curl -sI -f "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" >/dev/null 2>&1; then
+                      if curl -sI -f "http://84.235.248.136/uploads/yt_${YT_ID}.mp4" >/dev/null 2>&1; then
                         PATH_URL="/uploads/yt_${YT_ID}.mp4"
                         if [ ! -f "${CACHE_FILE}.dl" ]; then
                           touch "${CACHE_FILE}.dl"
-                          (curl -sL "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" -o "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"; rm -f "${CACHE_FILE}.dl") &
+                          (curl -sL "http://84.235.248.136/uploads/yt_${YT_ID}.mp4" -o "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"; rm -f "${CACHE_FILE}.dl") &
                         fi
                         break
                       fi
@@ -330,7 +330,7 @@ jobs:
                       yt-dlp --no-mtime --js-runtimes node --concurrent-fragments 8 -f "18/best[height<=720][ext=mp4]/best[height<=720]" -o "${CACHE_FILE}.tmp" "https://www.youtube.com/watch?v=${YT_ID}" || true
                       if [ -s "${CACHE_FILE}.tmp" ]; then
                         mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
-                        curl -s -X POST "https://24.onairplayout.com/api/upload-media" -H "Content-Type: application/octet-stream" -H "x-file-name: yt_${YT_ID}.mp4" --data-binary "@$CACHE_FILE" >/dev/null 2>&1 &
+                        curl -s -X POST "http://84.235.248.136/api/upload-media" -H "Content-Type: application/octet-stream" -H "x-file-name: yt_${YT_ID}.mp4" --data-binary "@$CACHE_FILE" >/dev/null 2>&1 &
                       fi
                     fi
                   fi
@@ -341,7 +341,7 @@ jobs:
               fi
 
               if echo "$PATH_URL" | grep -q "^/uploads/"; then
-                REMOTE_URL="https://24.onairplayout.com${PATH_URL}?_v=$(date +%s)"
+                REMOTE_URL="http://84.235.248.136${PATH_URL}?_v=$(date +%s)"
               elif [ -n "$HF_URL" ] && [ "$HF_URL" != "null" ] && ! echo "$HF_URL" | grep -q "huggingface.co/buckets/"; then
                 if echo "$HF_URL" | grep -q "?"; then
                   REMOTE_URL="${HF_URL}&_v=$(date +%s)"
@@ -349,17 +349,17 @@ jobs:
                   REMOTE_URL="${HF_URL}?_v=$(date +%s)"
                 fi
               elif echo "$VIDEO_NAME" | grep -qi "Elite"; then
-                REMOTE_URL="https://24.onairplayout.com/uploads/Elite_Force_2026_S01E01_720p_HD.mp4?_v=$(date +%s)"
+                REMOTE_URL="http://84.235.248.136/uploads/Elite_Force_2026_S01E01_720p_HD.mp4?_v=$(date +%s)"
               elif [ -n "$PATH_URL" ] && [ "$PATH_URL" != "null" ]; then
                 if echo "$PATH_URL" | grep -q "^http"; then
                   REMOTE_URL="$PATH_URL"
                 elif echo "$PATH_URL" | grep -q "?"; then
-                  REMOTE_URL="https://24.onairplayout.com${PATH_URL}&_v=$(date +%s)"
+                  REMOTE_URL="http://84.235.248.136${PATH_URL}&_v=$(date +%s)"
                 else
-                  REMOTE_URL="https://24.onairplayout.com${PATH_URL}?_v=$(date +%s)"
+                  REMOTE_URL="http://84.235.248.136${PATH_URL}?_v=$(date +%s)"
                 fi
               else
-                REMOTE_URL="https://24.onairplayout.com/uploads/${SAFE_CACHE_NAME}?_v=$(date +%s)"
+                REMOTE_URL="http://84.235.248.136/uploads/${SAFE_CACHE_NAME}?_v=$(date +%s)"
               fi
 
               if [ -s "$CACHE_FILE" ]; then
@@ -389,7 +389,7 @@ jobs:
               while kill -0 $$ 2>/dev/null; do
                 sleep 2
 
-                CTRL_NOW=$(curl -s "https://24.onairplayout.com/api/stream/status?uid=${OP_UID}" 2>/dev/null || echo '{"active":true}')
+                CTRL_NOW=$(curl -s "http://84.235.248.136/api/stream/status?uid=${OP_UID}" 2>/dev/null || echo '{"active":true}')
                 ACT_NOW=$(echo "$CTRL_NOW" | jq -r '.active // true' 2>/dev/null || echo "true")
                 if [ "$ACT_NOW" = "false" ]; then
                   touch /tmp/clip_switched_by_watcher
@@ -397,8 +397,8 @@ jobs:
                   break
                 fi
 
-                ST_NOW=$(curl -s "https://24.onairplayout.com/api/program/state?uid=${OP_UID}&worker=1" 2>/dev/null || echo "{}")
-                SET_NOW=$(curl -s "https://24.onairplayout.com/api/operator/settings?uid=${OP_UID}" 2>/dev/null || echo "{}")
+                ST_NOW=$(curl -s "http://84.235.248.136/api/program/state?uid=${OP_UID}&worker=1" 2>/dev/null || echo "{}")
+                SET_NOW=$(curl -s "http://84.235.248.136/api/operator/settings?uid=${OP_UID}" 2>/dev/null || echo "{}")
                 PL_LEN_NOW=$(echo "$SET_NOW" | jq -r '.settings.playlist | length // 0' 2>/dev/null | awk '{print int($1)}')
                 if [ -z "$PL_LEN_NOW" ] || [ "$PL_LEN_NOW" -lt 0 ]; then PL_LEN_NOW=0; fi
                 NAME_NOW=$(echo "$ST_NOW" | jq -r '.programItem.name // empty' 2>/dev/null || echo "")
@@ -442,8 +442,8 @@ jobs:
                   if [ "$IS_SAME_CLIP" = "false" ]; then
                     touch /tmp/clip_switched_by_watcher
                     if [ -n "$NEW_YT" ] && [ ! -s "/tmp/media_cache/yt_${NEW_YT}.mp4" ]; then
-                      if ! curl -sI -f "https://24.onairplayout.com/uploads/yt_${NEW_YT}.mp4" >/dev/null 2>&1; then
-                        curl -s -X POST "https://24.onairplayout.com/api/youtube/prefetch?ytId=${NEW_YT}" >/dev/null 2>&1 || true
+                      if ! curl -sI -f "http://84.235.248.136/uploads/yt_${NEW_YT}.mp4" >/dev/null 2>&1; then
+                        curl -s -X POST "http://84.235.248.136/api/youtube/prefetch?ytId=${NEW_YT}" >/dev/null 2>&1 || true
                       fi
                     fi
                     echo "Seamlessly switching single A/V Clip Feeder to $NAME_NOW ($PATH_NOW) without dropping RTMP..."
@@ -461,7 +461,7 @@ jobs:
                   else
                     LIVE_TC=$RAW_TC
                   fi
-                  curl -s -X POST "https://24.onairplayout.com/api/program/live-timecode?uid=${OP_UID}&from=worker" \
+                  curl -s -X POST "http://84.235.248.136/api/program/live-timecode?uid=${OP_UID}&from=worker" \
                     -H "Content-Type: application/json" \
                     -d "{\"uid\":\"${OP_UID}\",\"timecode\":$LIVE_TC,\"fromWorker\":true,\"clipName\":\"$SAFE_CUR_CLIP\",\"ytId\":\"$YT_ID\"}" >/dev/null 2>&1 || true
                 fi
@@ -475,7 +475,7 @@ jobs:
                       if [ ! -s "$Q_LOCAL" ] && [ ! -f "${Q_LOCAL}.Pre" ]; then
                         touch "${Q_LOCAL}.Pre"
                         (
-                          if curl -sfL "https://24.onairplayout.com${Q_PATH}" -o "${Q_LOCAL}.tmp"; then
+                          if curl -sfL "http://84.235.248.136${Q_PATH}" -o "${Q_LOCAL}.tmp"; then
                             TMP_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${Q_LOCAL}.tmp" 2>/dev/null | awk '{print int($1)}')
                             if [ -n "$TMP_DUR" ] && [ "$TMP_DUR" -ge 5 ]; then
                               mv "${Q_LOCAL}.tmp" "$Q_LOCAL"
@@ -536,11 +536,11 @@ jobs:
             # Only advance/reset timecode if a video clip actually played to its end AND was not already switched by WATCHER_PID!
             if [ -n "$VIDEO_NAME" ] && [ ! -f /tmp/clip_switched_by_watcher ] && [ "$DURATION_VAL" -gt 10 ] && [ "$FINAL_REACHED" -ge $(( DURATION_VAL - 8 )) ]; then
               if [ "$PL_LEN" -gt 1 ]; then
-                curl -s -X POST "https://24.onairplayout.com/api/program/live-timecode?uid=${OP_UID}&from=worker" \
+                curl -s -X POST "http://84.235.248.136/api/program/live-timecode?uid=${OP_UID}&from=worker" \
                   -H "Content-Type: application/json" \
                   -d "{\"uid\":\"${OP_UID}\",\"timecode\":$DURATION_VAL,\"fromWorker\":true,\"advanceNext\":true,\"clipName\":\"$SAFE_CUR_CLIP\",\"ytId\":\"$YT_ID\"}" >/dev/null 2>&1 || true
               else
-                curl -s -X POST "https://24.onairplayout.com/api/program/live-timecode?uid=${OP_UID}&from=worker" \
+                curl -s -X POST "http://84.235.248.136/api/program/live-timecode?uid=${OP_UID}&from=worker" \
                   -H "Content-Type: application/json" \
                   -d "{\"uid\":\"${OP_UID}\",\"timecode\":0,\"fromWorker\":true,\"clipName\":\"$SAFE_CUR_CLIP\",\"ytId\":\"$YT_ID\"}" >/dev/null 2>&1 || true
               fi
