@@ -80,16 +80,6 @@ jobs:
           echo "Cloud Broadcast Worker initialized for OP_UID=$OP_UID -> RTMP=$RTMP_URL"
 
           mkdir -p /tmp/media_cache
-          CB_TS=$(date +%s)
-          # Pre-cache active uploads to local NVMe SSD using .tmp + cache-buster so Cloudflare Edge never serves stale cached files
-          (curl -sL "https://24.onairplayout.com/uploads/BAHAAR_-The_Spirit_Of_Kashmir__Cover__By_Adnan_Manzoor_-_Qalaam_Studio.mp4?_v=${CB_TS}" -o "/tmp/media_cache/bahaar.tmp" && mv "/tmp/media_cache/bahaar.tmp" "/tmp/media_cache/BAHAAR_-The_Spirit_Of_Kashmir__Cover__By_Adnan_Manzoor_-_Qalaam_Studio.mp4") &
-          (curl -sL "https://24.onairplayout.com/uploads/USP_MULTAN_15_Anniversary.mp4?_v=${CB_TS}" -o "/tmp/media_cache/usp.tmp" && mv "/tmp/media_cache/usp.tmp" "/tmp/media_cache/USP_MULTAN_15_Anniversary.mp4") &
-          (curl -sL "https://24.onairplayout.com/uploads/yt_cAd8cvqRi9g.mp4?_v=${CB_TS}" -o "/tmp/media_cache/yt1.tmp" && mv "/tmp/media_cache/yt1.tmp" "/tmp/media_cache/yt_cAd8cvqRi9g.mp4") &
-          (curl -sL "https://24.onairplayout.com/uploads/yt_P4zyZAl30To.mp4?_v=${CB_TS}" -o "/tmp/media_cache/yt2.tmp" && mv "/tmp/media_cache/yt2.tmp" "/tmp/media_cache/yt_P4zyZAl30To.mp4") &
-          DEFAULT_HF_VIDEO="https://24.onairplayout.com/uploads/Elite_Force_2026_S01E01_720p_HD.mp4?_v=${CB_TS}"
-          (
-            curl -sL "$DEFAULT_HF_VIDEO" -o "/tmp/media_cache/elite_force.mp4.tmp" && mv "/tmp/media_cache/elite_force.mp4.tmp" "/tmp/media_cache/Elite_Force_2026_S01E01_720p_HD.mp4"
-          ) &
 
           # 1. Start Xvfb 1280x720 24-bit Virtual Screen
           Xvfb :99 -screen 0 1280x720x24 -ac +extension GLX +render -noreset &
@@ -276,11 +266,11 @@ jobs:
             # Query current program state & playlist from 24.onairplayout.com (worker=1 auto-resolves to next Cloud playlist item if Local PC file is selected)
             STATE_JSON=$(curl -s "https://24.onairplayout.com/api/program/state?uid=${OP_UID}&worker=1" 2>/dev/null || echo "{}")
             SETTINGS_JSON=$(curl -s "https://24.onairplayout.com/api/operator/settings?uid=${OP_UID}" 2>/dev/null || echo "{}")
-            PL_LEN=$(echo "$SETTINGS_JSON" | jq -r '.settings.playlist | length // 0' 2>/dev/null | awk '{print int($1)}')
+            PL_LEN=$(echo "$SETTINGS_JSON" | jq -r '((.settings.playlist // []) | length) + ((.settings.gapFiller // []) | length)' 2>/dev/null | awk '{print int($1)}')
             if [ -z "$PL_LEN" ] || [ "$PL_LEN" -lt 0 ]; then PL_LEN=0; fi
 
             VIDEO_NAME=$(echo "$STATE_JSON" | jq -r '.programItem.name // empty' 2>/dev/null || echo "")
-            if [ "$VIDEO_NAME" = "null" ] || [ "$PL_LEN" -eq 0 ]; then VIDEO_NAME=""; fi
+            if [ "$VIDEO_NAME" = "null" ]; then VIDEO_NAME=""; fi
             HF_URL=$(echo "$STATE_JSON" | jq -r '.programItem.hfResolveUrl // empty' 2>/dev/null || echo "")
             PATH_URL=$(echo "$STATE_JSON" | jq -r '.programItem.path // empty' 2>/dev/null || echo "")
             DURATION_VAL=$(echo "$STATE_JSON" | jq -r '.programItem.duration // 1919' 2>/dev/null | awk '{print int($1)}')
@@ -399,11 +389,11 @@ jobs:
 
                 ST_NOW=$(curl -s "https://24.onairplayout.com/api/program/state?uid=${OP_UID}&worker=1" 2>/dev/null || echo "{}")
                 SET_NOW=$(curl -s "https://24.onairplayout.com/api/operator/settings?uid=${OP_UID}" 2>/dev/null || echo "{}")
-                PL_LEN_NOW=$(echo "$SET_NOW" | jq -r '.settings.playlist | length // 0' 2>/dev/null | awk '{print int($1)}')
+                PL_LEN_NOW=$(echo "$SET_NOW" | jq -r '((.settings.playlist // []) | length) + ((.settings.gapFiller // []) | length)' 2>/dev/null | awk '{print int($1)}')
                 if [ -z "$PL_LEN_NOW" ] || [ "$PL_LEN_NOW" -lt 0 ]; then PL_LEN_NOW=0; fi
                 NAME_NOW=$(echo "$ST_NOW" | jq -r '.programItem.name // empty' 2>/dev/null || echo "")
                 PATH_NOW=$(echo "$ST_NOW" | jq -r '.programItem.path // empty' 2>/dev/null || echo "")
-                if [ "$NAME_NOW" = "null" ] || [ "$PL_LEN_NOW" -eq 0 ]; then NAME_NOW=""; fi
+                if [ "$NAME_NOW" = "null" ]; then NAME_NOW=""; fi
 
                 # Case A: Playlist was empty (no video) and operator added a video -> switch from black screen to video!
                 if [ -z "$VIDEO_NAME" ] && [ -n "$NAME_NOW" ]; then
@@ -481,22 +471,29 @@ jobs:
 
                 if [ "$PL_LEN_NOW" -gt 0 ]; then
                   PL_LEN=$PL_LEN_NOW
-                  for Q_PATH in $(echo "$SET_NOW" | jq -r '.settings.playlist[]?.path // empty' 2>/dev/null); do
+                  for Q_PATH in $(echo "$SET_NOW" | jq -r '((.settings.playlist // [])[0:3][].path // empty), ((.settings.gapFiller // [])[].path // empty)' 2>/dev/null); do
                     if echo "$Q_PATH" | grep -q "^/uploads/"; then
                       Q_FNAME=$(basename "$Q_PATH")
                       Q_LOCAL="/tmp/media_cache/${Q_FNAME}"
-                      if [ ! -s "$Q_LOCAL" ] && [ ! -f "${Q_LOCAL}.Pre" ]; then
+                      RECENT_FAIL=""
+                      if [ -f "${Q_LOCAL}.fail" ]; then
+                        RECENT_FAIL=$(find "${Q_LOCAL}.fail" -mmin -1 2>/dev/null || echo "")
+                      fi
+                      if [ ! -s "$Q_LOCAL" ] && [ ! -f "${Q_LOCAL}.Pre" ] && [ -z "$RECENT_FAIL" ]; then
                         touch "${Q_LOCAL}.Pre"
                         (
                           if curl -sfL "http://84.235.248.136${Q_PATH}" -o "${Q_LOCAL}.tmp"; then
                             TMP_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${Q_LOCAL}.tmp" 2>/dev/null | awk '{print int($1)}')
                             if [ -n "$TMP_DUR" ] && [ "$TMP_DUR" -ge 5 ]; then
                               mv "${Q_LOCAL}.tmp" "$Q_LOCAL"
+                              rm -f "${Q_LOCAL}.fail"
                             else
                               rm -f "${Q_LOCAL}.tmp"
+                              touch "${Q_LOCAL}.fail"
                             fi
                           else
                             rm -f "${Q_LOCAL}.tmp"
+                            touch "${Q_LOCAL}.fail"
                           fi
                           rm -f "${Q_LOCAL}.Pre"
                         ) &
@@ -545,6 +542,9 @@ jobs:
 
             kill $WATCHER_PID 2>/dev/null || true
             FINAL_ELAPSED=$(( $(date +%s) - FF_START_TS ))
+            if [ "$FINAL_ELAPSED" -lt 3 ] && [ ! -f /tmp/clip_switched_by_watcher ]; then
+              sleep 2
+            fi
             FINAL_REACHED=$(( TIMECODE + FINAL_ELAPSED ))
             # Only advance/reset timecode if a video clip actually played to its end AND was not already switched by WATCHER_PID!
             if [ -n "$VIDEO_NAME" ] && [ ! -f /tmp/clip_switched_by_watcher ] && [ "$DURATION_VAL" -gt 10 ] && [ "$FINAL_REACHED" -ge $(( DURATION_VAL - 8 )) ]; then
