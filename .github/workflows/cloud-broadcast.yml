@@ -286,14 +286,17 @@ jobs:
               TIMECODE=0
             fi
 
-            YT_ID=""
+            YT_ID=$(echo "$STATE_JSON" | jq -r '.programItem.ytId // empty' 2>/dev/null || echo "")
+            if [ "$YT_ID" = "null" ]; then YT_ID=""; fi
             INPUT_SOURCE=""
             if [ -n "$VIDEO_NAME" ]; then
               # Detect YouTube ID if PATH_URL or HF_URL is a YouTube link or cached yt_<id>.mp4
-              if echo "$PATH_URL" | grep -qiE "youtube|youtu\.be"; then
-                YT_ID=$(echo "$PATH_URL" | sed -nE 's/.*(v=|embed\/|youtu\.be\/|shorts\/|live\/)([a-zA-Z0-9_-]{11}).*/\2/p' | head -n 1)
-              elif echo "$PATH_URL" | grep -q "/uploads/yt_"; then
-                YT_ID=$(echo "$PATH_URL" | sed -nE 's/.*\/uploads\/yt_([a-zA-Z0-9_-]{11})\.mp4.*/\1/p' | head -n 1)
+              if [ -z "$YT_ID" ]; then
+                if echo "$PATH_URL" | grep -qiE "youtube|youtu\.be"; then
+                  YT_ID=$(echo "$PATH_URL" | sed -nE 's/.*(v=|embed\/|youtu\.be\/|shorts\/|live\/)([a-zA-Z0-9_-]{11}).*/\2/p' | head -n 1)
+                elif echo "$PATH_URL" | grep -q "/uploads/yt_"; then
+                  YT_ID=$(echo "$PATH_URL" | sed -nE 's/.*\/uploads\/yt_([a-zA-Z0-9_-]{11})\.mp4.*/\1/p' | head -n 1)
+                fi
               fi
 
               if [ -n "$YT_ID" ]; then
@@ -306,25 +309,30 @@ jobs:
                       (curl -sL "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" -o "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"; rm -f "${CACHE_FILE}.dl") &
                     fi
                   else
-                    curl -s -X POST "https://24.onairplayout.com/api/youtube/prefetch?ytId=${YT_ID}" >/dev/null 2>&1 || true
-                    for w_try in 1 2 3 4 5; do
-                      if curl -sI -f "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" >/dev/null 2>&1; then
-                        PATH_URL="/uploads/yt_${YT_ID}.mp4"
-                        if [ ! -f "${CACHE_FILE}.dl" ]; then
-                          touch "${CACHE_FILE}.dl"
-                          (curl -sL "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" -o "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"; rm -f "${CACHE_FILE}.dl") &
+                    curl -s -X POST "https://24.onairplayout.com/api/youtube/prefetch?ytId=${YT_ID}&uid=${OP_UID}" >/dev/null 2>&1 &
+                    if [ ! -f "${CACHE_FILE}.dl" ]; then
+                      touch "${CACHE_FILE}.dl"
+                      (
+                        yt-dlp --no-mtime --js-runtimes node --concurrent-fragments 8 -f "18/best[height<=720][ext=mp4]/best[height<=720]" -o "${CACHE_FILE}.tmp" "https://www.youtube.com/watch?v=${YT_ID}" || true
+                        if [ -s "${CACHE_FILE}.tmp" ]; then
+                          mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
+                          curl -s -X POST "https://24.onairplayout.com/api/upload-media" -H "Content-Type: application/octet-stream" -H "x-file-name: yt_${YT_ID}.mp4" --data-binary "@$CACHE_FILE" >/dev/null 2>&1 || true
                         fi
-                        break
-                      fi
-                      sleep 2
-                    done
-                    if [ ! -s "$CACHE_FILE" ] && ! echo "$PATH_URL" | grep -q "^/uploads/yt_"; then
-                      echo "Downloading YouTube video $YT_ID via yt-dlp..."
-                      yt-dlp --no-mtime --js-runtimes node --concurrent-fragments 8 -f "18/best[height<=720][ext=mp4]/best[height<=720]" -o "${CACHE_FILE}.tmp" "https://www.youtube.com/watch?v=${YT_ID}" || true
-                      if [ -s "${CACHE_FILE}.tmp" ]; then
-                        mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
-                        curl -s -X POST "https://24.onairplayout.com/api/upload-media" -H "Content-Type: application/octet-stream" -H "x-file-name: yt_${YT_ID}.mp4" --data-binary "@$CACHE_FILE" >/dev/null 2>&1 &
-                      fi
+                        rm -f "${CACHE_FILE}.dl"
+                      ) &
+                    fi
+                    DIRECT_YT_URL=$(yt-dlp --no-warnings --js-runtimes node -f "18/best[height<=720][ext=mp4]/best[height<=720]" -g "https://www.youtube.com/watch?v=${YT_ID}" 2>/dev/null | head -n 1 || echo "")
+                    if [ -n "$DIRECT_YT_URL" ]; then
+                      PATH_URL="$DIRECT_YT_URL"
+                    else
+                      for w_try in 1 2 3 4 5; do
+                        if [ -s "$CACHE_FILE" ]; then break; fi
+                        if curl -sI -f "https://24.onairplayout.com/uploads/yt_${YT_ID}.mp4" >/dev/null 2>&1; then
+                          PATH_URL="/uploads/yt_${YT_ID}.mp4"
+                          break
+                        fi
+                        sleep 2
+                      done
                     fi
                   fi
                 fi
@@ -424,11 +432,14 @@ jobs:
 
                 # Case C: Video changed to a different video
                 if [ -n "$VIDEO_NAME" ] && [ -n "$NAME_NOW" ]; then
-                  NEW_YT=""
-                  if echo "$PATH_NOW" | grep -qiE "youtube|youtu\.be"; then
-                    NEW_YT=$(echo "$PATH_NOW" | sed -nE 's/.*(v=|embed\/|youtu\.be\/|shorts\/|live\/)([a-zA-Z0-9_-]{11}).*/\2/p' | head -n 1)
-                  elif echo "$PATH_NOW" | grep -q "/uploads/yt_"; then
-                    NEW_YT=$(echo "$PATH_NOW" | sed -nE 's/.*\/uploads\/yt_([a-zA-Z0-9_-]{11})\.mp4.*/\1/p' | head -n 1)
+                  NEW_YT=$(echo "$ST_NOW" | jq -r '.programItem.ytId // empty' 2>/dev/null || echo "")
+                  if [ "$NEW_YT" = "null" ]; then NEW_YT=""; fi
+                  if [ -z "$NEW_YT" ]; then
+                    if echo "$PATH_NOW" | grep -qiE "youtube|youtu\.be"; then
+                      NEW_YT=$(echo "$PATH_NOW" | sed -nE 's/.*(v=|embed\/|youtu\.be\/|shorts\/|live\/)([a-zA-Z0-9_-]{11}).*/\2/p' | head -n 1)
+                    elif echo "$PATH_NOW" | grep -q "/uploads/yt_"; then
+                      NEW_YT=$(echo "$PATH_NOW" | sed -nE 's/.*\/uploads\/yt_([a-zA-Z0-9_-]{11})\.mp4.*/\1/p' | head -n 1)
+                    fi
                   fi
                   SAFE_NOW=$(echo "$NAME_NOW" | sed 's/[^a-zA-Z0-9._-]/_/g')
                   SAFE_CUR=$(echo "$VIDEO_NAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
