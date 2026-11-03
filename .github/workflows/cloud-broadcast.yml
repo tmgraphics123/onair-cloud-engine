@@ -279,7 +279,7 @@ jobs:
             DURATION_VAL=$(echo "$STATE_JSON" | jq -r '.programItem.duration // 1919' 2>/dev/null | awk '{print int($1)}')
             if [ -z "$DURATION_VAL" ] || [ "$DURATION_VAL" -le 5 ]; then DURATION_VAL=1919; fi
             TIMECODE=$(echo "$STATE_JSON" | jq -r '.timecode // 0' 2>/dev/null | awk '{print int($1)}')
-            if [ -z "$TIMECODE" ] || [ "$TIMECODE" -lt 8 ]; then
+            if [ -z "$TIMECODE" ] || [ "$TIMECODE" -lt 2 ]; then
               TIMECODE=0
             fi
             if [ "$DURATION_VAL" -gt 10 ] && [ "$TIMECODE" -ge $(( DURATION_VAL - 4 )) ]; then
@@ -481,7 +481,7 @@ jobs:
                     STUDIO_TC=$(echo "$TC_RESP" | jq -r '.timecode // 0' 2>/dev/null | awk '{print int($1)}')
                     if [ -n "$STUDIO_TC" ] && [ "$STUDIO_TC" -ge 0 ]; then
                       TC_DIFF=$(( STUDIO_TC - LIVE_TC ))
-                      if [ "$TC_DIFF" -gt 25 ] || [ "$TC_DIFF" -lt -25 ]; then
+                      if [ "$TC_DIFF" -gt 10 ] || [ "$TC_DIFF" -lt -10 ]; then
                         touch /tmp/clip_switched_by_watcher
                         echo "Studio timecode seek detected ($LIVE_TC -> $STUDIO_TC) -> seamlessly seeking single A/V Clip Feeder without dropping RTMP..."
                         if [ -f /tmp/feeder_av.pid ]; then kill -TERM $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
