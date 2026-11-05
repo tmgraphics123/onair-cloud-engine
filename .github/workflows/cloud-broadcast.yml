@@ -309,31 +309,9 @@ jobs:
                       (curl -sL "https://www.onairplayout.com/uploads/yt_${YT_ID}.mp4" -o "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"; rm -f "${CACHE_FILE}.dl") &
                     fi
                   else
-                    curl -s -X POST "https://www.onairplayout.com/api/youtube/prefetch?ytId=${YT_ID}&uid=${OP_UID}" >/dev/null 2>&1 &
-                    if [ ! -f "${CACHE_FILE}.dl" ]; then
-                      touch "${CACHE_FILE}.dl"
-                      (
-                        yt-dlp --no-mtime --js-runtimes node --concurrent-fragments 8 -f "18/best[height<=720][ext=mp4]/best[height<=720]" -o "${CACHE_FILE}.tmp" "https://www.youtube.com/watch?v=${YT_ID}" || true
-                        if [ -s "${CACHE_FILE}.tmp" ]; then
-                          mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
-                          curl -s -X POST "https://www.onairplayout.com/api/upload-media" -H "Content-Type: application/octet-stream" -H "x-file-name: yt_${YT_ID}.mp4" --data-binary "@$CACHE_FILE" >/dev/null 2>&1 || true
-                        fi
-                        rm -f "${CACHE_FILE}.dl"
-                      ) &
-                    fi
-                    DIRECT_YT_URL=$(yt-dlp --no-warnings --js-runtimes node -f "18/best[height<=720][ext=mp4]/best[height<=720]" -g "https://www.youtube.com/watch?v=${YT_ID}" 2>/dev/null | head -n 1 || echo "")
-                    if [ -n "$DIRECT_YT_URL" ]; then
-                      PATH_URL="$DIRECT_YT_URL"
-                    else
-                      for w_try in 1 2 3 4 5; do
-                        if [ -s "$CACHE_FILE" ]; then break; fi
-                        if curl -sI -f "https://www.onairplayout.com/uploads/yt_${YT_ID}.mp4" >/dev/null 2>&1; then
-                          PATH_URL="/uploads/yt_${YT_ID}.mp4"
-                          break
-                        fi
-                        sleep 2
-                      done
-                    fi
+                    curl -s -X POST "https://www.onairplayout.com/api/youtube/prefetch?ytId=${YT_ID}&uid=${OP_UID}&directOnly=1" >/dev/null 2>&1 &
+                    VIDEO_NAME=""
+                    PATH_URL=""
                   fi
                 fi
               elif echo "$PATH_URL" | grep -q "^/uploads/"; then
@@ -360,7 +338,10 @@ jobs:
               elif echo "$VIDEO_NAME" | grep -qi "Elite"; then
                 REMOTE_URL="https://www.onairplayout.com/uploads/Elite_Force_2026_S01E01_720p_HD.mp4?_v=$(date +%s)"
               elif [ -n "$PATH_URL" ] && [ "$PATH_URL" != "null" ]; then
-                if echo "$PATH_URL" | grep -q "^http"; then
+                if echo "$PATH_URL" | grep -qiE "^(browser|ndi|webrtc|camera)://"; then
+                  VIDEO_NAME=""
+                  REMOTE_URL=""
+                elif echo "$PATH_URL" | grep -q "^http"; then
                   REMOTE_URL="$PATH_URL"
                 elif echo "$PATH_URL" | grep -q "?"; then
                   REMOTE_URL="https://www.onairplayout.com${PATH_URL}&_v=$(date +%s)"
@@ -569,7 +550,15 @@ jobs:
             kill $WATCHER_PID 2>/dev/null || true
             FINAL_ELAPSED=$(( $(date +%s) - FF_START_TS ))
             if [ "$FINAL_ELAPSED" -lt 3 ] && [ ! -f /tmp/clip_switched_by_watcher ]; then
-              sleep 2
+              ffmpeg -y -hide_banner -loglevel error -nostats -fflags +genpts \
+                -re -f lavfi -i "color=c=black:s=1280x720:r=$ENC_FPS" \
+                -f lavfi -i "anullsrc=r=44100:cl=stereo" \
+                -t 3 -map 0:v:0 -map 1:a:0 \
+                -vf "setpts=N/(${ENC_FPS}*TB)" -af "asetpts=N/SR/TB" \
+                -c:v mpeg2video -q:v 4 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
+                -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
+                -mpegts_flags +resend_headers+pat_pmt_at_frames -flush_packets 1 \
+                -f mpegts /tmp/muxed_av.ts 2>/dev/null || sleep 1
             fi
             FINAL_REACHED=$(( TIMECODE + FINAL_ELAPSED ))
             # Only advance/reset timecode if a video clip actually played to its end AND was not already switched by WATCHER_PID!
