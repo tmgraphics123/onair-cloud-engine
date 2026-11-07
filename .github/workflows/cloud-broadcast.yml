@@ -162,9 +162,9 @@ jobs:
               # If no Clip Feeder is currently writing to /tmp/muxed_av.ts, seed 0.8s of black TS packets so Master Encoder starts in <0.5s with zero block!
               if [ ! -f /tmp/feeder_av.pid ] || ! kill -0 $(cat /tmp/feeder_av.pid 2>/dev/null) 2>/dev/null; then
                 ffmpeg -y -hide_banner -loglevel error \
-                  -f lavfi -i color=c=black:s=1280x720:r=$E_FPS \
-                  -f lavfi -i anullsrc=r=44100:cl=stereo \
-                  -t 0.8 \
+                  -re -f lavfi -i color=c=black:s=1280x720:r=$E_FPS \
+                  -re -f lavfi -i anullsrc=r=44100:cl=stereo:n=1470 \
+                  -t 0.5 -shortest -max_interleave_delta 0 \
                   -vf "setpts=N/(${E_FPS}*TB)" \
                   -af "asetpts=N/SR/TB" \
                   -c:v mpeg2video -q:v 2 -g 1 -r $E_FPS -pix_fmt yuv420p \
@@ -512,14 +512,16 @@ jobs:
             ) &
             WATCHER_PID=$!
 
+            dd if=/tmp/muxed_av.ts iflag=nonblock of=/dev/null bs=65536 count=50 >/dev/null 2>&1 || true
             if [ -z "$VIDEO_NAME" ]; then
               echo "Playlist is empty -> Feeding Black Canvas + Silent Audio while Live Tickers & Overlays remain ON AIR..."
-              ffmpeg -y -hide_banner -loglevel warning -nostats -fflags +genpts \
+              ffmpeg -y -hide_banner -loglevel warning -nostats \
                 -re -f lavfi -i "color=c=black:s=1280x720:r=$ENC_FPS" \
-                -f lavfi -i "anullsrc=r=44100:cl=stereo" \
+                -re -f lavfi -i "anullsrc=r=44100:cl=stereo:n=1470" \
                 -map 0:v:0 -map 1:a:0 \
                 -vf "setpts=N/(${ENC_FPS}*TB)" \
                 -af "asetpts=N/SR/TB" \
+                -shortest -max_interleave_delta 0 \
                 -c:v mpeg2video -q:v 4 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
                 -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
                 -mpegts_flags +resend_headers+pat_pmt_at_frames \
@@ -534,13 +536,13 @@ jobs:
               if echo "$INPUT_SOURCE" | grep -qiE "^https?://"; then
                 RECON_FLAGS="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
               fi
-              ffmpeg -y -hide_banner -loglevel warning -nostats -fflags +genpts \
+              ffmpeg -y -hide_banner -loglevel warning -nostats \
                 $RECON_FLAGS \
-                -ss "$TIMECODE" -re -i "$INPUT_SOURCE" \
+                -ss "$TIMECODE" -accurate_seek -re -i "$INPUT_SOURCE" \
                 -map 0:v:0 -map 0:a:0? \
-                -vf "fps=${ENC_FPS}:start_time=0,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,setpts=N/(${ENC_FPS}*TB)" \
-                -af "aresample=44100:async=1000:first_pts=0,asetpts=N/SR/TB" \
-                -shortest \
+                -vf "trim=start=0,setpts=PTS-STARTPTS,fps=${ENC_FPS}:start_time=0,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,setpts=N/(${ENC_FPS}*TB)" \
+                -af "atrim=start=0,asetpts=PTS-STARTPTS,aresample=44100:async=1000,asetpts=N/SR/TB" \
+                -shortest -max_interleave_delta 0 \
                 -c:v mpeg2video -q:v 2 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
                 -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
                 -mpegts_flags +resend_headers+pat_pmt_at_frames \
@@ -554,10 +556,10 @@ jobs:
             kill $WATCHER_PID 2>/dev/null || true
             FINAL_ELAPSED=$(( $(date +%s) - FF_START_TS ))
             if [ "$FINAL_ELAPSED" -lt 3 ] && [ ! -f /tmp/clip_switched_by_watcher ]; then
-              ffmpeg -y -hide_banner -loglevel error -nostats -fflags +genpts \
+              ffmpeg -y -hide_banner -loglevel error -nostats \
                 -re -f lavfi -i "color=c=black:s=1280x720:r=$ENC_FPS" \
-                -f lavfi -i "anullsrc=r=44100:cl=stereo" \
-                -t 3 -map 0:v:0 -map 1:a:0 \
+                -re -f lavfi -i "anullsrc=r=44100:cl=stereo:n=1470" \
+                -t 2 -shortest -max_interleave_delta 0 -map 0:v:0 -map 1:a:0 \
                 -vf "setpts=N/(${ENC_FPS}*TB)" -af "asetpts=N/SR/TB" \
                 -c:v mpeg2video -q:v 4 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
                 -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
