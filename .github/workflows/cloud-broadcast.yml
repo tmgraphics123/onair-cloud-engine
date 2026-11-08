@@ -157,7 +157,7 @@ jobs:
               ENC_SIG="${E_RES}:${E_FPS}:${E_VB}:${E_AB}:${ACT_RTMP}"
 
               # Drain any partial/stale FIFO bytes before starting Master Encoder so MPEG-TS always starts on a clean 188-byte packet boundary
-              dd if=/tmp/muxed_av.ts iflag=nonblock of=/dev/null bs=65536 count=30 >/dev/null 2>&1 || true
+              dd if=/tmp/muxed_av.ts iflag=nonblock of=/dev/null bs=65424 count=30 >/dev/null 2>&1 || true
 
               # If no Clip Feeder is currently writing to /tmp/muxed_av.ts, seed 0.8s of black TS packets so Master Encoder starts in <0.5s with zero block!
               if [ ! -f /tmp/feeder_av.pid ] || ! kill -0 $(cat /tmp/feeder_av.pid 2>/dev/null) 2>/dev/null; then
@@ -387,7 +387,7 @@ jobs:
                 ACT_NOW=$(echo "$CTRL_NOW" | jq -r '.active // true' 2>/dev/null || echo "true")
                 if [ "$ACT_NOW" = "false" ]; then
                   touch /tmp/clip_switched_by_watcher
-                  if [ -f /tmp/feeder_av.pid ]; then kill -TERM $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
+                  if [ -f /tmp/feeder_av.pid ]; then kill -INT $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
                   break
                 fi
 
@@ -403,7 +403,7 @@ jobs:
                 if [ -z "$VIDEO_NAME" ] && [ -n "$NAME_NOW" ]; then
                   touch /tmp/clip_switched_by_watcher
                   echo "Playlist populated with $NAME_NOW -> switching from Tickers-Only Black Screen to Video!"
-                  if [ -f /tmp/feeder_av.pid ]; then kill -TERM $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
+                  if [ -f /tmp/feeder_av.pid ]; then kill -INT $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
                   break
                 fi
 
@@ -411,7 +411,7 @@ jobs:
                 if [ -n "$VIDEO_NAME" ] && [ -z "$NAME_NOW" ]; then
                   touch /tmp/clip_switched_by_watcher
                   echo "Playlist cleared -> stopping video and switching to Tickers-Only Black Screen!"
-                  if [ -f /tmp/feeder_av.pid ]; then kill -TERM $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
+                  if [ -f /tmp/feeder_av.pid ]; then kill -INT $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
                   break
                 fi
 
@@ -444,7 +444,7 @@ jobs:
                       fi
                     fi
                     echo "Seamlessly switching single A/V Clip Feeder to $NAME_NOW ($PATH_NOW) without dropping RTMP..."
-                    if [ -f /tmp/feeder_av.pid ]; then kill -TERM $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
+                    if [ -f /tmp/feeder_av.pid ]; then kill -INT $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
                     break
                   fi
                 fi
@@ -469,7 +469,7 @@ jobs:
                       if [ "$TC_DIFF" -gt 10 ] || [ "$TC_DIFF" -lt -10 ]; then
                         touch /tmp/clip_switched_by_watcher
                         echo "Studio timecode seek detected ($LIVE_TC -> $STUDIO_TC) -> seamlessly seeking single A/V Clip Feeder without dropping RTMP..."
-                        if [ -f /tmp/feeder_av.pid ]; then kill -TERM $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
+                        if [ -f /tmp/feeder_av.pid ]; then kill -INT $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
                         break
                       fi
                     fi
@@ -512,7 +512,6 @@ jobs:
             ) &
             WATCHER_PID=$!
 
-            dd if=/tmp/muxed_av.ts iflag=nonblock of=/dev/null bs=65536 count=50 >/dev/null 2>&1 || true
             if [ -z "$VIDEO_NAME" ]; then
               echo "Playlist is empty -> Feeding Black Canvas + Silent Audio while Live Tickers & Overlays remain ON AIR..."
               ffmpeg -y -hide_banner -loglevel warning -nostats \
@@ -538,10 +537,10 @@ jobs:
               fi
               ffmpeg -y -hide_banner -loglevel warning -nostats \
                 $RECON_FLAGS \
-                -ss "$TIMECODE" -accurate_seek -re -i "$INPUT_SOURCE" \
+                -ss "$TIMECODE" -accurate_seek -i "$INPUT_SOURCE" \
                 -map 0:v:0 -map 0:a:0? \
-                -vf "trim=start=0,setpts=PTS-STARTPTS,fps=${ENC_FPS}:start_time=0,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,setpts=N/(${ENC_FPS}*TB)" \
-                -af "atrim=start=0,asetpts=PTS-STARTPTS,aresample=44100:async=1000,asetpts=N/SR/TB" \
+                -vf "fps=${ENC_FPS}:start_time=0,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,setpts=N/(${ENC_FPS}*TB),realtime" \
+                -af "aresample=44100:async=1000:first_pts=0,asetpts=N/SR/TB,arealtime" \
                 -shortest -max_interleave_delta 0 \
                 -c:v mpeg2video -q:v 2 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
                 -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
