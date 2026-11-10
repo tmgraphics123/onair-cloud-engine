@@ -544,9 +544,6 @@ jobs:
               SEEK_MODE="-accurate_seek"
               if echo "$INPUT_SOURCE" | grep -qiE "^https?://"; then
                 RECON_FLAGS="-reconnect 1 -reconnect_delay_max 5"
-                if [ "$TIMECODE" -gt 10 ]; then
-                  SEEK_MODE="-noaccurate_seek"
-                fi
               fi
               TRIM_V=""
               TRIM_A=""
