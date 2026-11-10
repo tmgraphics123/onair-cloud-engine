@@ -42,16 +42,13 @@ jobs:
             sudo killall -9 unattended-upgr apt apt-get dpkg 2>/dev/null || true
             sudo rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend 2>/dev/null || true
             sudo dpkg --configure -a 2>/dev/null || true
+            sudo rm -rf /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
+            echo "deb http://archive.ubuntu.com/ubuntu noble main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/ubuntu-official.list
+            echo "deb http://archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/ubuntu-official.list
+            echo "deb http://security.ubuntu.com/ubuntu noble-security main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/ubuntu-official.list
             APT_OPTS="-o Acquire::Retries=2 -o Acquire::http::Timeout=5 -o Acquire::https::Timeout=5 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
             sudo DEBIAN_FRONTEND=noninteractive apt-get update $APT_OPTS -y || true
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install $APT_OPTS -y --no-install-recommends ffmpeg xvfb xauth ca-certificates || true
-            if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v Xvfb >/dev/null 2>&1; then
-              echo "deb http://archive.ubuntu.com/ubuntu noble main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/fallback-ubuntu.list
-              echo "deb http://archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/fallback-ubuntu.list
-              echo "deb http://security.ubuntu.com/ubuntu noble-security main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/fallback-ubuntu.list
-              sudo DEBIAN_FRONTEND=noninteractive apt-get update $APT_OPTS -y || true
-              sudo DEBIAN_FRONTEND=noninteractive apt-get install $APT_OPTS -y --no-install-recommends --fix-missing ffmpeg xvfb xauth ca-certificates || true
-            fi
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install $APT_OPTS -y --no-install-recommends --fix-missing ffmpeg xvfb xauth ca-certificates || true
           fi
           if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v Xvfb >/dev/null 2>&1; then
             echo "FATAL: ffmpeg or Xvfb missing after setup"
