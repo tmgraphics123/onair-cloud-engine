@@ -106,6 +106,11 @@ jobs:
             --disable-search-engine-choice-screen \
             --user-data-dir=/tmp/chrome-prof \
             --disable-gpu \
+            --disable-frame-rate-limit \
+            --disable-background-timer-throttling \
+            --disable-renderer-backgrounding \
+            --disable-backgrounding-occluded-windows \
+            --disable-ipc-flooding-protection \
             --autoplay-policy=no-user-gesture-required \
             --window-size=1280,720 \
             --window-position=0,0 \
@@ -145,42 +150,36 @@ jobs:
                 *)         E_RES="1280x720"; SCALE_OUT="" ;;
               esac
               E_FPS=$(echo "$S_CTRL" | jq -r '.encoderConfig.fps // 30' 2>/dev/null | awk '{print int($1)}')
-              if [ -z "$E_FPS" ] || [ "$E_FPS" -lt 15 ] || [ "$E_FPS" -gt 60 ]; then E_FPS=30; fi
-              # Keep X11 overlay grab at max 30fps for zero CPU spike, and output at configured bitrate/resolution/fps
-              X11_FPS=$(( E_FPS > 30 ? 30 : E_FPS ))
+              if [ -z "$E_FPS" ] || [ "$E_FPS" -lt 15 ] || [ "$E_FPS" -gt 30 ]; then E_FPS=30; fi
+              X11_FPS="$E_FPS"
               E_GOP=$(( E_FPS * 2 ))
-              E_VB=$(echo "$S_CTRL" | jq -r '.encoderConfig.videoBitrate // 2500' 2>/dev/null | awk '{print int($1)}')
-              if [ -z "$E_VB" ] || [ "$E_VB" -lt 800 ]; then E_VB=2500; fi
-              if [ "$E_VB" -gt 8000 ]; then E_VB=8000; fi
-              ACT_VB="$E_VB"
-              E_MAX=$(( ACT_VB + 300 ))
+              E_VB=$(echo "$S_CTRL" | jq -r '.encoderConfig.videoBitrate // 2000' 2>/dev/null | awk '{print int($1)}')
+              if [ -z "$E_VB" ] || [ "$E_VB" -lt 800 ]; then E_VB=1800; fi
+              if [ "$E_RES" = "854x480" ] && [ "$E_VB" -gt 1600 ]; then
+                ACT_VB=1600
+              elif [ "$E_RES" = "1280x720" ] && [ "$E_VB" -gt 2200 ]; then
+                ACT_VB=2200
+              elif [ "$E_VB" -gt 3200 ]; then
+                ACT_VB=3200
+              else
+                ACT_VB="$E_VB"
+              fi
+              E_MAX=$(( ACT_VB + 200 ))
               E_BUF=$(( ACT_VB * 2 ))
               E_AB=$(echo "$S_CTRL" | jq -r '.encoderConfig.audioBitrate // 128' 2>/dev/null | awk '{print int($1)}')
               if [ -z "$E_AB" ] || [ "$E_AB" -lt 64 ]; then E_AB=128; fi
-              if [ "$E_AB" -gt 384 ]; then E_AB=384; fi
+              if [ "$E_AB" -gt 192 ]; then E_AB=192; fi
               C_RTMP=$(echo "$S_CTRL" | jq -r '.encoderConfig.rtmpUrl // empty' 2>/dev/null || echo "")
               ACT_RTMP="${C_RTMP:-$RTMP_URL}"
               ENC_SIG="${E_RES}:${E_FPS}:${E_VB}:${E_AB}:${ACT_RTMP}"
 
-              # Drain any partial/stale FIFO bytes before starting Master Encoder so MPEG-TS always starts on a clean 188-byte packet boundary
-              dd if=/tmp/muxed_av.ts iflag=nonblock of=/dev/null bs=65424 count=30 >/dev/null 2>&1 || true
-
-              # If no Clip Feeder is currently writing to /tmp/muxed_av.ts, seed 0.8s of black TS packets so Master Encoder starts in <0.5s with zero block!
-              if [ ! -f /tmp/feeder_av.pid ] || ! kill -0 $(cat /tmp/feeder_av.pid 2>/dev/null) 2>/dev/null; then
-                ffmpeg -y -hide_banner -loglevel error \
-                  -re -f lavfi -i color=c=black:s=1280x720:r=$E_FPS \
-                  -re -f lavfi -i anullsrc=r=44100:cl=stereo:n=1470 \
-                  -t 0.5 -shortest -max_interleave_delta 0 \
-                  -vf "setpts=N/(${E_FPS}*TB)" \
-                  -af "asetpts=N/SR/TB" \
-                  -c:v mpeg2video -q:v 2 -g 1 -r $E_FPS -pix_fmt yuv420p \
-                  -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
-                  -mpegts_flags +resend_headers+pat_pmt_at_frames \
-                  -flush_packets 1 \
-                  -f mpegts /tmp/muxed_av.ts >/dev/null 2>&1 &
-                SEED_PID=$!
-                sleep 0.2
-              fi
+              # Wait briefly for Clip Feeder to start writing clean MPEG-TS packets to /tmp/muxed_av.ts (never run two writers simultaneously!)
+              for _w in $(seq 1 30); do
+                if [ -f /tmp/feeder_av.pid ] && kill -0 $(cat /tmp/feeder_av.pid 2>/dev/null) 2>/dev/null; then
+                  break
+                fi
+                sleep 0.1
+              done
 
               echo "[Master-RTMP-Encoder] Starting persistent 24/7 RTMP/UDP stream to $ACT_RTMP @ ${E_RES} ${E_FPS}fps ${ACT_VB}kbps (audio ${E_AB}kbps)..."
               if echo "$ACT_RTMP" | grep -q "|"; then
@@ -195,10 +194,10 @@ jobs:
                   fi
                 done
                 ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts+igndts+discardcorrupt \
-                  -probesize 65536 -analyzeduration 200000 -thread_queue_size 2048 -f mpegts -i /tmp/muxed_av.ts \
-                  -thread_queue_size 2048 -f x11grab -draw_mouse 0 -framerate "$X11_FPS" -video_size 1280x720 -i :99.0 \
+                  -probesize 65536 -analyzeduration 200000 -thread_queue_size 4096 -f mpegts -i /tmp/muxed_av.ts \
+                  -thread_queue_size 4096 -f x11grab -draw_mouse 0 -framerate "$X11_FPS" -video_size 1280x720 -i :99.0 \
                   -t "$REM_ENC" \
-                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]fps=$E_FPS,setpts=N/(${E_FPS}*TB),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:ts_sync_mode=nearest:format=auto${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
+                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]setpts=N/(${E_FPS}*TB),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:ts_sync_mode=nearest:format=auto${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
                   -c:v libx264 -preset superfast -bf 0 -pix_fmt yuv420p -b:v "${ACT_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 44100 \
@@ -208,10 +207,10 @@ jobs:
                 OUT_FMT="flv"
                 if echo "$ACT_RTMP" | grep -qiE "^(udp|srt)://"; then OUT_FMT="mpegts"; fi
                 ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts+igndts+discardcorrupt \
-                  -probesize 65536 -analyzeduration 200000 -thread_queue_size 2048 -f mpegts -i /tmp/muxed_av.ts \
-                  -thread_queue_size 2048 -f x11grab -draw_mouse 0 -framerate "$X11_FPS" -video_size 1280x720 -i :99.0 \
+                  -probesize 65536 -analyzeduration 200000 -thread_queue_size 4096 -f mpegts -i /tmp/muxed_av.ts \
+                  -thread_queue_size 4096 -f x11grab -draw_mouse 0 -framerate "$X11_FPS" -video_size 1280x720 -i :99.0 \
                   -t "$REM_ENC" \
-                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]fps=$E_FPS,setpts=N/(${E_FPS}*TB),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:ts_sync_mode=nearest:format=auto${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
+                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]setpts=N/(${E_FPS}*TB),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:ts_sync_mode=nearest:format=auto${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
                   -c:v libx264 -preset superfast -bf 0 -pix_fmt yuv420p -b:v "${ACT_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 44100 \
@@ -232,9 +231,9 @@ jobs:
                   N_RES=$(echo "$CHK_C" | jq -r '.encoderConfig.resolution // "1280x720"' 2>/dev/null || echo "1280x720")
                   case "$N_RES" in 1920x1080|854x480) ;; *) N_RES="1280x720" ;; esac
                   N_FPS=$(echo "$CHK_C" | jq -r '.encoderConfig.fps // 30' 2>/dev/null | awk '{print int($1)}')
-                  if [ -z "$N_FPS" ] || [ "$N_FPS" -lt 15 ] || [ "$N_FPS" -gt 60 ]; then N_FPS=30; fi
-                  N_VB=$(echo "$CHK_C" | jq -r '.encoderConfig.videoBitrate // 2500' 2>/dev/null | awk '{print int($1)}')
-                  if [ -z "$N_VB" ] || [ "$N_VB" -lt 800 ]; then N_VB=2500; fi
+                  if [ -z "$N_FPS" ] || [ "$N_FPS" -lt 15 ] || [ "$N_FPS" -gt 30 ]; then N_FPS=30; fi
+                  N_VB=$(echo "$CHK_C" | jq -r '.encoderConfig.videoBitrate // 2000' 2>/dev/null | awk '{print int($1)}')
+                  if [ -z "$N_VB" ] || [ "$N_VB" -lt 800 ]; then N_VB=1800; fi
                   N_AB=$(echo "$CHK_C" | jq -r '.encoderConfig.audioBitrate // 128' 2>/dev/null | awk '{print int($1)}')
                   if [ -z "$N_AB" ] || [ "$N_AB" -lt 64 ]; then N_AB=128; fi
                   N_CR=$(echo "$CHK_C" | jq -r '.encoderConfig.rtmpUrl // empty' 2>/dev/null || echo "")
@@ -530,7 +529,7 @@ jobs:
                 -c:v mpeg2video -q:v 4 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
                 -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
                 -mpegts_flags +resend_headers+pat_pmt_at_frames \
-                -flush_packets 1 \
+                -muxdelay 0 -muxpreload 0 -flush_packets 1 \
                 -f mpegts /tmp/muxed_av.ts &
               FEED_AV_PID=$!
               echo $FEED_AV_PID > /tmp/feeder_av.pid
@@ -567,29 +566,29 @@ jobs:
               if [ "$HAS_AUD" = "0" ]; then
                 ffmpeg -y -hide_banner -loglevel warning -nostats \
                   $RECON_FLAGS \
-                  -ss "$TIMECODE" $SEEK_MODE -i "$INPUT_SOURCE" \
+                  -re -ss "$TIMECODE" $SEEK_MODE -i "$INPUT_SOURCE" \
                   -f lavfi -i "anullsrc=r=44100:cl=stereo:n=1470" \
                   -map 0:v:0 -map 1:a:0 \
-                  -vf "fps=${ENC_FPS}:start_time=0,${TRIM_V}scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,setpts=N/(${ENC_FPS}*TB),realtime" \
-                  -af "${TRIM_A}asetpts=N/SR/TB,arealtime" \
+                  -vf "fps=${ENC_FPS}:start_time=0,${TRIM_V}scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,setpts=N/(${ENC_FPS}*TB)" \
+                  -af "${TRIM_A}asetpts=N/SR/TB" \
                   -shortest -max_interleave_delta 0 \
                   -c:v mpeg2video -q:v 2 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
                   -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
                   -mpegts_flags +resend_headers+pat_pmt_at_frames \
-                  -flush_packets 1 \
+                  -muxdelay 0 -muxpreload 0 -flush_packets 1 \
                   -f mpegts /tmp/muxed_av.ts &
               else
                 ffmpeg -y -hide_banner -loglevel warning -nostats \
                   $RECON_FLAGS \
-                  -ss "$TIMECODE" $SEEK_MODE -i "$INPUT_SOURCE" \
+                  -re -ss "$TIMECODE" $SEEK_MODE -i "$INPUT_SOURCE" \
                   -map 0:v:0 -map 0:a:0 \
-                  -vf "fps=${ENC_FPS}:start_time=0,${TRIM_V}scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,setpts=N/(${ENC_FPS}*TB),realtime" \
-                  -af "aresample=44100:async=1000:first_pts=0,${TRIM_A}asetpts=N/SR/TB,arealtime" \
+                  -vf "fps=${ENC_FPS}:start_time=0,${TRIM_V}scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,tpad=start_duration=0.22:start_mode=clone,setpts=N/(${ENC_FPS}*TB)" \
+                  -af "aresample=44100:async=1000:first_pts=0,${TRIM_A}asetpts=N/SR/TB" \
                   -shortest -max_interleave_delta 0 \
                   -c:v mpeg2video -q:v 2 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
                   -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
                   -mpegts_flags +resend_headers+pat_pmt_at_frames \
-                  -flush_packets 1 \
+                  -muxdelay 0 -muxpreload 0 -flush_packets 1 \
                   -f mpegts /tmp/muxed_av.ts &
               fi
               FEED_AV_PID=$!
@@ -607,7 +606,7 @@ jobs:
                 -vf "setpts=N/(${ENC_FPS}*TB)" -af "asetpts=N/SR/TB" \
                 -c:v mpeg2video -q:v 4 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
                 -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
-                -mpegts_flags +resend_headers+pat_pmt_at_frames -flush_packets 1 \
+                -mpegts_flags +resend_headers+pat_pmt_at_frames -muxdelay 0 -muxpreload 0 -flush_packets 1 \
                 -f mpegts /tmp/muxed_av.ts 2>/dev/null || sleep 1
             fi
             FINAL_REACHED=$(( TIMECODE + FINAL_ELAPSED ))
