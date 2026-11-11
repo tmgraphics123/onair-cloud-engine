@@ -157,10 +157,10 @@ jobs:
               if [ -z "$E_VB" ] || [ "$E_VB" -lt 800 ]; then E_VB=1800; fi
               if [ "$E_RES" = "854x480" ] && [ "$E_VB" -gt 1600 ]; then
                 ACT_VB=1600
-              elif [ "$E_RES" = "1280x720" ] && [ "$E_VB" -gt 2200 ]; then
-                ACT_VB=2200
-              elif [ "$E_VB" -gt 3200 ]; then
-                ACT_VB=3200
+              elif [ "$E_RES" = "1280x720" ] && [ "$E_VB" -gt 2500 ]; then
+                ACT_VB=2500
+              elif [ "$E_VB" -gt 4000 ]; then
+                ACT_VB=4000
               else
                 ACT_VB="$E_VB"
               fi
@@ -181,7 +181,7 @@ jobs:
                 sleep 0.1
               done
 
-              echo "[Master-RTMP-Encoder] Starting persistent 24/7 RTMP/UDP stream to $ACT_RTMP @ ${E_RES} ${E_FPS}fps ${ACT_VB}kbps (audio ${E_AB}kbps)..."
+              echo "[Master-RTMP-Encoder] Starting persistent 24/7 RTMP/UDP stream to $ACT_RTMP @ ${E_RES} ${E_FPS}fps ${ACT_VB}kbps (audio ${E_AB}kbps, 48kHz zero-drift)..."
               if echo "$ACT_RTMP" | grep -q "|"; then
                 TEE_S=""
                 IFS='|' read -ra ADDR <<< "$ACT_RTMP"
@@ -193,27 +193,27 @@ jobs:
                     TEE_S="${TEE_S}[f=flv:onfail=ignore]${u}"
                   fi
                 done
-                ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts+igndts+discardcorrupt \
-                  -probesize 65536 -analyzeduration 200000 -thread_queue_size 4096 -f mpegts -i /tmp/muxed_av.ts \
-                  -thread_queue_size 4096 -f x11grab -draw_mouse 0 -framerate "$X11_FPS" -video_size 1280x720 -i :99.0 \
+                ffmpeg -nostdin -hide_banner -loglevel warning -nostats -fflags +genpts+igndts \
+                  -probesize 524288 -analyzeduration 500000 -thread_queue_size 4096 -f mpegts -i /tmp/muxed_av.ts \
+                  -thread_queue_size 128 -use_wallclock_as_timestamps 1 -f x11grab -draw_mouse 0 -framerate "$X11_FPS" -video_size 1280x720 -i :99.0 \
                   -t "$REM_ENC" \
-                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]setpts=N/(${E_FPS}*TB),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:ts_sync_mode=nearest:format=auto${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
+                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]setpts=PTS-STARTPTS,fps=${E_FPS},format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:ts_sync_mode=nearest:format=yuv420${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
-                  -c:v libx264 -preset superfast -bf 0 -pix_fmt yuv420p -b:v "${ACT_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
-                  -c:a aac -ac 2 -b:a "${E_AB}k" -ar 44100 \
+                  -c:v libx264 -preset ultrafast -tune zerolatency -bf 0 -pix_fmt yuv420p -b:v "${ACT_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
+                  -c:a aac -ac 2 -b:a "${E_AB}k" -ar 48000 \
                   -flags +global_header -f tee "$TEE_S" &
                 M_ENC_PID=$!
               else
                 OUT_FMT="flv"
                 if echo "$ACT_RTMP" | grep -qiE "^(udp|srt)://"; then OUT_FMT="mpegts"; fi
-                ffmpeg -hide_banner -loglevel warning -nostats -fflags +genpts+igndts+discardcorrupt \
-                  -probesize 65536 -analyzeduration 200000 -thread_queue_size 4096 -f mpegts -i /tmp/muxed_av.ts \
-                  -thread_queue_size 4096 -f x11grab -draw_mouse 0 -framerate "$X11_FPS" -video_size 1280x720 -i :99.0 \
+                ffmpeg -nostdin -hide_banner -loglevel warning -nostats -fflags +genpts+igndts \
+                  -probesize 524288 -analyzeduration 500000 -thread_queue_size 4096 -f mpegts -i /tmp/muxed_av.ts \
+                  -thread_queue_size 128 -use_wallclock_as_timestamps 1 -f x11grab -draw_mouse 0 -framerate "$X11_FPS" -video_size 1280x720 -i :99.0 \
                   -t "$REM_ENC" \
-                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]setpts=N/(${E_FPS}*TB),colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:ts_sync_mode=nearest:format=auto${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
+                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]setpts=PTS-STARTPTS,fps=${E_FPS},format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:ts_sync_mode=nearest:format=yuv420${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
-                  -c:v libx264 -preset superfast -bf 0 -pix_fmt yuv420p -b:v "${ACT_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
-                  -c:a aac -ac 2 -b:a "${E_AB}k" -ar 44100 \
+                  -c:v libx264 -preset ultrafast -tune zerolatency -bf 0 -pix_fmt yuv420p -b:v "${ACT_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
+                  -c:a aac -ac 2 -b:a "${E_AB}k" -ar 48000 \
                   -f "$OUT_FMT" "$ACT_RTMP" &
                 M_ENC_PID=$!
               fi
@@ -290,10 +290,10 @@ jobs:
             TIMECODE=$(echo "$STATE_JSON" | jq -r '.timecode // 0' 2>/dev/null | awk '{print int($1)}')
             CUR_CHECK_CLIP=$(echo "$VIDEO_NAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
             if [ -n "$LAST_FINISHED_CLIP" ] && [ "$PL_LEN" -gt 1 ] && [ "$CUR_CHECK_CLIP" = "$LAST_FINISHED_CLIP" ]; then
-              curl -s -X POST "https://www.onairplayout.com/api/program/live-timecode?uid=${OP_UID}&from=worker" \
+              ADV_TRY=$(curl -s -X POST "https://www.onairplayout.com/api/program/live-timecode?uid=${OP_UID}&from=worker" \
                 -H "Content-Type: application/json" \
-                -d "{\"uid\":\"${OP_UID}\",\"timecode\":$DURATION_VAL,\"fromWorker\":true,\"advanceNext\":true,\"clipName\":\"$CUR_CHECK_CLIP\"}" >/dev/null 2>&1 || true
-              sleep 0.4
+                -d "{\"uid\":\"${OP_UID}\",\"timecode\":$DURATION_VAL,\"fromWorker\":true,\"advanceNext\":true,\"clipName\":\"$CUR_CHECK_CLIP\"}" 2>/dev/null || echo "{}")
+              sleep 0.25
               STATE_JSON=$(curl -s "https://www.onairplayout.com/api/program/state?uid=${OP_UID}&worker=1" 2>/dev/null || echo "{}")
               VIDEO_NAME=$(echo "$STATE_JSON" | jq -r '.programItem.name // empty' 2>/dev/null || echo "")
               if [ "$VIDEO_NAME" = "null" ]; then VIDEO_NAME=""; fi
@@ -302,6 +302,25 @@ jobs:
               DURATION_VAL=$(echo "$STATE_JSON" | jq -r '.programItem.duration // 1919' 2>/dev/null | awk '{print int($1)}')
               if [ -z "$DURATION_VAL" ] || [ "$DURATION_VAL" -le 5 ]; then DURATION_VAL=1919; fi
               TIMECODE=$(echo "$STATE_JSON" | jq -r '.timecode // 0' 2>/dev/null | awk '{print int($1)}')
+              RECHECK_CLIP=$(echo "$VIDEO_NAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
+              if [ "$RECHECK_CLIP" = "$LAST_FINISHED_CLIP" ]; then
+                # Fallback: directly select next item from playlist/gapFiller so finished clip NEVER flashes 0:00 frame!
+                NEXT_FB_JSON=$(echo "$SETTINGS_JSON" | jq -c --arg cur "$VIDEO_NAME" '
+                  ((.settings.playlist // []) | if length > 0 then . else (.settings.gapFiller // []) end) as $list |
+                  if ($list | length) > 1 then
+                    ([$list | to_entries[] | select(.value.name == $cur) | .key][0] // 0) as $idx |
+                    $list[(($idx + 1) % ($list | length))]
+                  else empty end
+                ' 2>/dev/null || echo "")
+                if [ -n "$NEXT_FB_JSON" ] && [ "$NEXT_FB_JSON" != "null" ]; then
+                  VIDEO_NAME=$(echo "$NEXT_FB_JSON" | jq -r '.name // empty' 2>/dev/null || echo "$VIDEO_NAME")
+                  HF_URL=$(echo "$NEXT_FB_JSON" | jq -r '.hfResolveUrl // empty' 2>/dev/null || echo "")
+                  PATH_URL=$(echo "$NEXT_FB_JSON" | jq -r '.path // empty' 2>/dev/null || echo "")
+                  DURATION_VAL=$(echo "$NEXT_FB_JSON" | jq -r '.duration // 1919' 2>/dev/null | awk '{print int($1)}')
+                  if [ -z "$DURATION_VAL" ] || [ "$DURATION_VAL" -le 5 ]; then DURATION_VAL=1919; fi
+                  TIMECODE=0
+                fi
+              fi
             fi
             LAST_FINISHED_CLIP=""
             if [ -z "$TIMECODE" ] || [ "$TIMECODE" -lt 2 ]; then
@@ -402,7 +421,7 @@ jobs:
             # 3) On video switch or playlist clear, gracefully stops clip_feeder (keeping Master RTMP Encoder & Tickers 100% live!)
             (
               while kill -0 $$ 2>/dev/null; do
-                sleep 2
+                sleep 1
 
                 CTRL_NOW=$(curl -s "https://www.onairplayout.com/api/stream/status?uid=${OP_UID}&worker=1" 2>/dev/null || echo '{"active":true}')
                 ACT_NOW=$(echo "$CTRL_NOW" | jq -r '.active // true' 2>/dev/null || echo "true")
@@ -535,15 +554,15 @@ jobs:
 
             if [ -z "$VIDEO_NAME" ]; then
               echo "Playlist is empty -> Feeding Black Canvas + Silent Audio while Live Tickers & Overlays remain ON AIR..."
-              ffmpeg -y -hide_banner -loglevel warning -nostats \
+              ffmpeg -nostdin -y -hide_banner -loglevel warning -nostats \
                 -re -f lavfi -i "color=c=black:s=1280x720:r=$ENC_FPS" \
-                -re -f lavfi -i "anullsrc=r=44100:cl=stereo:n=1470" \
+                -re -f lavfi -i "anullsrc=r=48000:cl=stereo:n=1600" \
                 -map 0:v:0 -map 1:a:0 \
                 -vf "setpts=N/(${ENC_FPS}*TB)" \
                 -af "asetpts=N/SR/TB" \
                 -shortest -max_interleave_delta 0 \
                 -c:v mpeg2video -q:v 4 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
-                -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
+                -c:a mp2 -b:a 256k -ar 48000 -ac 2 \
                 -mpegts_flags +resend_headers+pat_pmt_at_frames \
                 -muxdelay 0 -muxpreload 0 -flush_packets 1 \
                 -f mpegts /tmp/muxed_av.ts &
@@ -551,7 +570,7 @@ jobs:
               echo $FEED_AV_PID > /tmp/feeder_av.pid
               wait $FEED_AV_PID 2>/dev/null || true
             else
-              echo "Feeding 100% Frame-Accurate Lip-Synced Video+Audio Clip: $VIDEO_NAME (Source: $INPUT_SOURCE) @ ${ENC_FPS}fps starting at ${TIMECODE}s..."
+              echo "Feeding 100% Frame-Accurate Zero-Drift Lip-Synced Video+Audio Clip: $VIDEO_NAME (Source: $INPUT_SOURCE) @ ${ENC_FPS}fps starting at ${TIMECODE}s..."
               RECON_FLAGS=""
               SEEK_MODE="-accurate_seek"
               if echo "$INPUT_SOURCE" | grep -qiE "^https?://"; then
@@ -560,48 +579,63 @@ jobs:
               TRIM_V=""
               TRIM_A=""
               HAS_AUD="1"
-              if [ -s "$INPUT_SOURCE" ]; then
+              if [ -n "$INPUT_SOURCE" ]; then
                 HAS_AUD=$(ffprobe -v error -select_streams a:0 -show_entries stream=index -of csv=p=0 "$INPUT_SOURCE" 2>/dev/null | wc -l | awk '{print int($1)}')
                 EX_VD=$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 "$INPUT_SOURCE" 2>/dev/null | head -n 1)
+                if [ -z "$EX_VD" ] || [ "$EX_VD" = "N/A" ]; then
+                  EX_VD=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$INPUT_SOURCE" 2>/dev/null | head -n 1)
+                fi
                 EX_AD=$(ffprobe -v error -select_streams a:0 -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 "$INPUT_SOURCE" 2>/dev/null | head -n 1)
-                PLAY_SEC=$(awk -v vd="$EX_VD" -v ad="$EX_AD" -v tc="$TIMECODE" -v fps="$ENC_FPS" 'BEGIN {
-                  v = vd + 0; a = ad + 0; t = tc + 0; f = (fps > 0 ? fps : 30);
+                PLAY_COUNTS=$(awk -v vd="$EX_VD" -v ad="$EX_AD" -v tc="$TIMECODE" -v fps="$ENC_FPS" 'BEGIN {
+                  v = vd + 0; a = ad + 0; t = tc + 0; f = int(fps > 0 ? fps : 30);
                   m = (v > 1 && a > 1) ? (v < a ? v : a) : (v > 1 ? v : a);
                   rem = m - t - 0.15;
-                  if (rem > 0.5) {
-                    tenths = int(rem * 10);
-                    printf "%.1f", (tenths / 10);
+                  if (rem > 1.3) {
+                    step = 1;
+                    while (step < 300 && ((step * 48000) % (f * 1152)) != 0) step++;
+                    raw_f = int(rem * f);
+                    play_f = int(raw_f / step) * step;
+                    if (play_f >= step) {
+                      play_s = int((play_f * 48000) / f);
+                      printf "%d %d", play_f, play_s;
+                    }
                   }
                 }')
-                if [ -n "$PLAY_SEC" ]; then
-                  TRIM_V="trim=duration=${PLAY_SEC},"
-                  TRIM_A="atrim=duration=${PLAY_SEC},"
+                if [ -n "$PLAY_COUNTS" ]; then
+                  PLAY_FRAMES=$(echo "$PLAY_COUNTS" | awk '{print $1}')
+                  PLAY_SAMPLES=$(echo "$PLAY_COUNTS" | awk '{print $2}')
+                  if [ -n "$PLAY_FRAMES" ] && [ -n "$PLAY_SAMPLES" ]; then
+                    TRIM_V="trim=end_frame=${PLAY_FRAMES},"
+                    TRIM_A="apad,atrim=end_sample=${PLAY_SAMPLES},"
+                  fi
                 fi
               fi
               if [ "$HAS_AUD" = "0" ]; then
-                ffmpeg -y -hide_banner -loglevel warning -nostats \
+                SIL_TRIM=""
+                if [ -n "${PLAY_SAMPLES:-}" ]; then SIL_TRIM="atrim=end_sample=${PLAY_SAMPLES},"; fi
+                ffmpeg -nostdin -y -hide_banner -loglevel warning -nostats \
                   $RECON_FLAGS \
                   -re -ss "$TIMECODE" $SEEK_MODE -i "$INPUT_SOURCE" \
-                  -f lavfi -i "anullsrc=r=44100:cl=stereo:n=1470" \
+                  -f lavfi -i "anullsrc=r=48000:cl=stereo:n=1600" \
                   -map 0:v:0 -map 1:a:0 \
                   -vf "fps=${ENC_FPS}:start_time=0,${TRIM_V}scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,setpts=N/(${ENC_FPS}*TB)" \
-                  -af "${TRIM_A}asetpts=N/SR/TB" \
+                  -af "${SIL_TRIM}asetpts=N/SR/TB" \
                   -shortest -max_interleave_delta 0 \
-                  -c:v mpeg2video -q:v 2 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
-                  -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
+                  -c:v mpeg2video -q:v 3 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
+                  -c:a mp2 -b:a 256k -ar 48000 -ac 2 \
                   -mpegts_flags +resend_headers+pat_pmt_at_frames \
                   -muxdelay 0 -muxpreload 0 -flush_packets 1 \
                   -f mpegts /tmp/muxed_av.ts &
               else
-                ffmpeg -y -hide_banner -loglevel warning -nostats \
+                ffmpeg -nostdin -y -hide_banner -loglevel warning -nostats \
                   $RECON_FLAGS \
                   -re -ss "$TIMECODE" $SEEK_MODE -i "$INPUT_SOURCE" \
                   -map 0:v:0 -map 0:a:0 \
                   -vf "fps=${ENC_FPS}:start_time=0,${TRIM_V}scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,setpts=N/(${ENC_FPS}*TB)" \
-                  -af "aresample=44100:async=1000:first_pts=0,atrim=start=0.12,asetpts=PTS-STARTPTS,apad,${TRIM_A}asetpts=N/SR/TB" \
+                  -af "aresample=48000:async=1000:first_pts=0,${TRIM_A}asetpts=N/SR/TB" \
                   -shortest -max_interleave_delta 0 \
-                  -c:v mpeg2video -q:v 2 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
-                  -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
+                  -c:v mpeg2video -q:v 3 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
+                  -c:a mp2 -b:a 256k -ar 48000 -ac 2 \
                   -mpegts_flags +resend_headers+pat_pmt_at_frames \
                   -muxdelay 0 -muxpreload 0 -flush_packets 1 \
                   -f mpegts /tmp/muxed_av.ts &
@@ -614,13 +648,13 @@ jobs:
             kill $WATCHER_PID 2>/dev/null || true
             FINAL_ELAPSED=$(( $(date +%s) - FF_START_TS ))
             if [ "$FINAL_ELAPSED" -lt 3 ] && [ ! -f /tmp/clip_switched_by_watcher ]; then
-              ffmpeg -y -hide_banner -loglevel error -nostats \
+              ffmpeg -nostdin -y -hide_banner -loglevel error -nostats \
                 -re -f lavfi -i "color=c=black:s=1280x720:r=$ENC_FPS" \
-                -re -f lavfi -i "anullsrc=r=44100:cl=stereo:n=1470" \
-                -t 2 -shortest -max_interleave_delta 0 -map 0:v:0 -map 1:a:0 \
+                -re -f lavfi -i "anullsrc=r=48000:cl=stereo:n=1600" \
+                -t 1.2 -shortest -max_interleave_delta 0 -map 0:v:0 -map 1:a:0 \
                 -vf "setpts=N/(${ENC_FPS}*TB)" -af "asetpts=N/SR/TB" \
                 -c:v mpeg2video -q:v 4 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
-                -c:a mp2 -b:a 256k -ar 44100 -ac 2 \
+                -c:a mp2 -b:a 256k -ar 48000 -ac 2 \
                 -mpegts_flags +resend_headers+pat_pmt_at_frames -muxdelay 0 -muxpreload 0 -flush_packets 1 \
                 -f mpegts /tmp/muxed_av.ts 2>/dev/null || sleep 1
             fi
