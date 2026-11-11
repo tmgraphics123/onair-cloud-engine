@@ -41,21 +41,24 @@ jobs:
             sudo killall -9 unattended-upgr apt apt-get dpkg 2>/dev/null || true
             sudo rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend 2>/dev/null || true
             sudo dpkg --configure -a 2>/dev/null || true
-            # Keep Ubuntu's local 10Gbps Azure mirror (ubuntu.sources) and remove only slow 3rd-party repo lists
-            sudo find /etc/apt/sources.list.d/ -maxdepth 1 -type f ! -name 'ubuntu*' -delete 2>/dev/null || true
-            APT_OPTS="-o Acquire::Retries=2 -o Acquire::http::Timeout=8 -o Acquire::https::Timeout=8 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
-            sudo DEBIAN_FRONTEND=noninteractive apt-get update $APT_OPTS -y || true
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install $APT_OPTS -y --no-install-recommends --fix-missing ffmpeg xvfb xauth ca-certificates || true
-          fi
-          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v Xvfb >/dev/null 2>&1; then
-            # HTTPS CDN mirror fallback (never throttled on port 80)
+            # Bypass slow/hanging azure.archive.ubuntu.com mirror immediately; use fast HTTPS kernel.org CDN mirror first
             sudo rm -rf /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
             CODENAME=$(. /etc/os-release 2>/dev/null && echo "${VERSION_CODENAME:-noble}")
-            echo "deb https://mirrors.edge.kernel.org/ubuntu ${CODENAME} main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/ubuntu-https-fallback.list >/dev/null
-            echo "deb https://mirrors.edge.kernel.org/ubuntu ${CODENAME}-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/ubuntu-https-fallback.list >/dev/null
-            echo "deb https://mirrors.edge.kernel.org/ubuntu ${CODENAME}-security main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/ubuntu-https-fallback.list >/dev/null
-            sudo DEBIAN_FRONTEND=noninteractive apt-get update -o Acquire::Retries=2 -o Acquire::https::Timeout=10 -y || true
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --fix-missing ffmpeg xvfb xauth ca-certificates || true
+            PKGS="xvfb xauth ca-certificates"
+            if ! command -v ffmpeg >/dev/null 2>&1; then PKGS="$PKGS ffmpeg"; fi
+            printf "deb https://mirrors.edge.kernel.org/ubuntu %s main restricted universe multiverse\ndeb https://mirrors.edge.kernel.org/ubuntu %s-updates main restricted universe multiverse\ndeb https://mirrors.edge.kernel.org/ubuntu %s-security main restricted universe multiverse\n" "$CODENAME" "$CODENAME" "$CODENAME" | sudo tee /etc/apt/sources.list.d/onair-fast.list >/dev/null
+            APT_OPTS="-o Acquire::Retries=1 -o Acquire::http::Timeout=8 -o Acquire::https::Timeout=8 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+            timeout 35 sudo DEBIAN_FRONTEND=noninteractive apt-get update $APT_OPTS -y || true
+            timeout 45 sudo DEBIAN_FRONTEND=noninteractive apt-get install $APT_OPTS -y --no-install-recommends --fix-missing $PKGS || true
+          fi
+          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v Xvfb >/dev/null 2>&1; then
+            sudo rm -rf /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
+            CODENAME=$(. /etc/os-release 2>/dev/null && echo "${VERSION_CODENAME:-noble}")
+            PKGS="xvfb xauth ca-certificates"
+            if ! command -v ffmpeg >/dev/null 2>&1; then PKGS="$PKGS ffmpeg"; fi
+            printf "deb http://archive.ubuntu.com/ubuntu %s main restricted universe multiverse\ndeb http://archive.ubuntu.com/ubuntu %s-updates main restricted universe multiverse\n" "$CODENAME" "$CODENAME" | sudo tee /etc/apt/sources.list.d/onair-fallback.list >/dev/null
+            timeout 35 sudo DEBIAN_FRONTEND=noninteractive apt-get update -o Acquire::Retries=1 -o Acquire::http::Timeout=8 -y || true
+            timeout 45 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --fix-missing $PKGS || true
           fi
           if ! command -v ffmpeg >/dev/null 2>&1; then
             curl -sL --max-time 30 "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" -o /tmp/ff.tar.xz && \
@@ -66,18 +69,44 @@ jobs:
             echo "FATAL: ffmpeg or Xvfb missing after setup"
             exit 1
           fi
-          mkdir -p ~/.local/share/fonts
-          curl -sL --max-time 15 "https://www.onairplayout.com/fonts/Jameel%20Noori%20Nastaleeq.ttf" -o ~/.local/share/fonts/JameelNooriNastaleeq.ttf &
-          curl -sL --max-time 12 "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf" -o ~/.local/share/fonts/Amiri-Bold.ttf &
-          curl -sL --max-time 12 "https://github.com/google/fonts/raw/main/ofl/notonastaliqurdu/NotoNastaliqUrdu%5Bwght%5D.ttf" -o ~/.local/share/fonts/NotoNastaliqUrdu.ttf &
-          curl -sL --max-time 12 "https://github.com/google/fonts/raw/main/ofl/notosansdevanagari/NotoSansDevanagari%5Bwdth,wght%5D.ttf" -o ~/.local/share/fonts/NotoSansDevanagari.ttf &
+          mkdir -p ~/.local/share/fonts ~/.config/fontconfig
+          curl -sfL --max-time 45 "http://84.235.248.136/uploads/fonts/JameelNooriNastaleeq.ttf" -o ~/.local/share/fonts/JameelNooriNastaleeq.ttf &
+          curl -sfL --max-time 45 "http://84.235.248.136/uploads/fonts/Alvi_Nastaleeq.ttf" -o ~/.local/share/fonts/Alvi_Nastaleeq.ttf &
+          curl -sfL --max-time 30 "http://84.235.248.136/uploads/fonts/Nafees%20Nastaleeq.ttf" -o "$HOME/.local/share/fonts/Nafees Nastaleeq.ttf" &
+          curl -sfL --max-time 30 "http://84.235.248.136/uploads/fonts/Urdu_Emad_Nastaliq.ttf" -o ~/.local/share/fonts/Urdu_Emad_Nastaliq.ttf &
           wait
-          printf "%s\n" JameelNooriNastaleeq.ttf NotoNastaliqUrdu.ttf Gulzar-Regular.ttf Cairo-Bold.ttf Tajawal-Bold.ttf Almarai-Bold.ttf Vazirmatn-Bold.ttf NotoNaskhArabic-Bold.ttf ElMessiri-Bold.ttf Amiri-Bold.ttf NotoSansDevanagari.ttf Hind-Bold.ttf NotoSansBengali-Bold.ttf Outfit-Bold.ttf Inter-Bold.ttf Oswald-Bold.ttf BebasNeue-Regular.ttf Montserrat-Bold.ttf Poppins-Bold.ttf Roboto-Bold.ttf | \
-            xargs -P 8 -I{} sh -c 'curl -sfL --max-time 10 "https://www.onairplayout.com/uploads/fonts/{}" -o "$HOME/.local/share/fonts/{}" 2>/dev/null || true'
+          if [ -s ~/.local/share/fonts/JameelNooriNastaleeq.ttf ]; then
+            cp -f ~/.local/share/fonts/JameelNooriNastaleeq.ttf "$HOME/.local/share/fonts/Jameel Noori Nastaleeq.ttf"
+          fi
+          printf "%s\n" NotoNastaliqUrdu.ttf Gulzar-Regular.ttf Cairo-Bold.ttf Tajawal-Bold.ttf Almarai-Bold.ttf Vazirmatn-Bold.ttf NotoNaskhArabic-Bold.ttf ElMessiri-Bold.ttf Amiri-Bold.ttf NotoSansDevanagari.ttf Hind-Bold.ttf NotoSansBengali-Bold.ttf Outfit-Bold.ttf Inter-Bold.ttf Oswald-Bold.ttf BebasNeue-Regular.ttf Montserrat-Bold.ttf Poppins-Bold.ttf Roboto-Bold.ttf | \
+            xargs -P 6 -I{} sh -c 'curl -sfL --max-time 20 "http://84.235.248.136/uploads/fonts/{}" -o "$HOME/.local/share/fonts/{}" 2>/dev/null || true'
           for F_URL in $(curl -s --max-time 8 "https://www.onairplayout.com/api/fonts/list" 2>/dev/null | jq -r '.customFonts[]?.url // empty' 2>/dev/null); do
-            F_BN=$(basename "$F_URL")
-            [ -s "$HOME/.local/share/fonts/${F_BN}" ] || curl -sfL --max-time 10 "https://www.onairplayout.com${F_URL}" -o "$HOME/.local/share/fonts/${F_BN}" || true
+            F_BN=$(python3 -c "import urllib.parse, sys, os; print(os.path.basename(urllib.parse.unquote(sys.argv[1])))" "$F_URL" 2>/dev/null || basename "$F_URL")
+            [ -s "$HOME/.local/share/fonts/${F_BN}" ] || curl -sfL --max-time 15 "http://84.235.248.136${F_URL}" -o "$HOME/.local/share/fonts/${F_BN}" || true
           done
+          # Purge any non-font/HTML file so fontconfig is 100% pure binary fonts
+          for FF in "$HOME/.local/share/fonts/"*; do
+            [ -f "$FF" ] || continue
+            if ! file "$FF" 2>/dev/null | grep -qiE "TrueType|OpenType|Web Open Font|font"; then
+              rm -f "$FF"
+            fi
+          done
+          cat > ~/.config/fontconfig/fonts.conf <<'FCEOF'
+          <?xml version="1.0"?>
+          <!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+          <fontconfig>
+            <match target="font">
+              <test name="family" compare="contains"><string>Nastaleeq</string></test>
+              <edit name="embolden" mode="assign"><bool>false</bool></edit>
+              <edit name="hinting" mode="assign"><bool>false</bool></edit>
+            </match>
+            <match target="font">
+              <test name="family" compare="contains"><string>Nastaliq</string></test>
+              <edit name="embolden" mode="assign"><bool>false</bool></edit>
+              <edit name="hinting" mode="assign"><bool>false</bool></edit>
+            </match>
+          </fontconfig>
+          FCEOF
           fc-cache -f ~/.local/share/fonts || true
           sudo curl -sL --max-time 15 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && sudo chmod a+rx /usr/local/bin/yt-dlp || true
 
@@ -110,6 +139,8 @@ jobs:
           touch "/tmp/chrome-prof/First Run"
           TZ=Asia/Karachi google-chrome \
             --no-sandbox \
+            --font-render-hinting=none \
+            --force-device-scale-factor=1 \
             --no-first-run \
             --no-default-browser-check \
             --disable-search-engine-choice-screen \
