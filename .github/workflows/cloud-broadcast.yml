@@ -70,7 +70,7 @@ jobs:
             exit 1
           fi
           mkdir -p ~/.local/share/fonts ~/.config/fontconfig
-          curl -sfL --max-time 45 "http://84.235.248.136/uploads/fonts/JameelNooriNastaleeq.ttf" -o ~/.local/share/fonts/JameelNooriNastaleeq.ttf &
+          (curl -sfL --max-time 20 "https://cdn.jsdelivr.net/gh/nicholasgasior/gfonts-urdu@master/JameelNooriNastaleeq.ttf" -o ~/.local/share/fonts/JameelNooriNastaleeq.ttf || curl -sfL --max-time 90 "http://84.235.248.136/uploads/fonts/JameelNooriNastaleeq.ttf" -o ~/.local/share/fonts/JameelNooriNastaleeq.ttf) &
           curl -sfL --max-time 45 "http://84.235.248.136/uploads/fonts/Alvi_Nastaleeq.ttf" -o ~/.local/share/fonts/Alvi_Nastaleeq.ttf &
           curl -sfL --max-time 30 "http://84.235.248.136/uploads/fonts/Nafees%20Nastaleeq.ttf" -o "$HOME/.local/share/fonts/Nafees Nastaleeq.ttf" &
           curl -sfL --max-time 30 "http://84.235.248.136/uploads/fonts/Urdu_Emad_Nastaliq.ttf" -o ~/.local/share/fonts/Urdu_Emad_Nastaliq.ttf &
