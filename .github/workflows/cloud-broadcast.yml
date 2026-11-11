@@ -35,39 +35,48 @@ jobs:
         timeout-minutes: 4
         run: |
           set +e
-          set -x
-          sudo ln -snf /usr/share/zoneinfo/Asia/Karachi /etc/localtime && echo "Asia/Karachi" | sudo tee /etc/timezone
+          sudo ln -snf /usr/share/zoneinfo/Asia/Karachi /etc/localtime && echo "Asia/Karachi" | sudo tee /etc/timezone >/dev/null
           if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v Xvfb >/dev/null 2>&1; then
             sudo systemctl kill -s SIGKILL apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
             sudo killall -9 unattended-upgr apt apt-get dpkg 2>/dev/null || true
             sudo rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend 2>/dev/null || true
             sudo dpkg --configure -a 2>/dev/null || true
-            sudo rm -rf /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
-            echo "deb http://archive.ubuntu.com/ubuntu noble main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/ubuntu-official.list
-            echo "deb http://archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/ubuntu-official.list
-            echo "deb http://security.ubuntu.com/ubuntu noble-security main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/ubuntu-official.list
-            APT_OPTS="-o Acquire::Retries=2 -o Acquire::http::Timeout=5 -o Acquire::https::Timeout=5 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+            # Keep Ubuntu's local 10Gbps Azure mirror (ubuntu.sources) and remove only slow 3rd-party repo lists
+            sudo find /etc/apt/sources.list.d/ -maxdepth 1 -type f ! -name 'ubuntu*' -delete 2>/dev/null || true
+            APT_OPTS="-o Acquire::Retries=2 -o Acquire::http::Timeout=8 -o Acquire::https::Timeout=8 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
             sudo DEBIAN_FRONTEND=noninteractive apt-get update $APT_OPTS -y || true
             sudo DEBIAN_FRONTEND=noninteractive apt-get install $APT_OPTS -y --no-install-recommends --fix-missing ffmpeg xvfb xauth ca-certificates || true
+          fi
+          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v Xvfb >/dev/null 2>&1; then
+            # HTTPS CDN mirror fallback (never throttled on port 80)
+            sudo rm -rf /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
+            CODENAME=$(. /etc/os-release 2>/dev/null && echo "${VERSION_CODENAME:-noble}")
+            echo "deb https://mirrors.edge.kernel.org/ubuntu ${CODENAME} main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/ubuntu-https-fallback.list >/dev/null
+            echo "deb https://mirrors.edge.kernel.org/ubuntu ${CODENAME}-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/ubuntu-https-fallback.list >/dev/null
+            echo "deb https://mirrors.edge.kernel.org/ubuntu ${CODENAME}-security main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/ubuntu-https-fallback.list >/dev/null
+            sudo DEBIAN_FRONTEND=noninteractive apt-get update -o Acquire::Retries=2 -o Acquire::https::Timeout=10 -y || true
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --fix-missing ffmpeg xvfb xauth ca-certificates || true
+          fi
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            curl -sL --max-time 30 "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" -o /tmp/ff.tar.xz && \
+              sudo tar -xJf /tmp/ff.tar.xz -C /usr/local/bin --strip-components=1 --wildcards '*/ffmpeg' '*/ffprobe' && \
+              rm -f /tmp/ff.tar.xz || true
           fi
           if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v Xvfb >/dev/null 2>&1; then
             echo "FATAL: ffmpeg or Xvfb missing after setup"
             exit 1
           fi
           mkdir -p ~/.local/share/fonts
-          curl -sL --max-time 25 "https://www.onairplayout.com/fonts/Jameel%20Noori%20Nastaleeq.ttf" -o ~/.local/share/fonts/JameelNooriNastaleeq.ttf || true
-          curl -sL --max-time 15 "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf" -o ~/.local/share/fonts/Amiri-Bold.ttf || true
-          curl -sL --max-time 15 "https://github.com/google/fonts/raw/main/ofl/notonastaliqurdu/NotoNastaliqUrdu%5Bwght%5D.ttf" -o ~/.local/share/fonts/NotoNastaliqUrdu.ttf || true
-          curl -sL --max-time 15 "https://github.com/google/fonts/raw/main/ofl/notosansdevanagari/NotoSansDevanagari%5Bwdth,wght%5D.ttf" -o ~/.local/share/fonts/NotoSansDevanagari.ttf || true
-          for F_BN in JameelNooriNastaleeq.ttf NotoNastaliqUrdu.ttf Amiri-Bold.ttf Cairo-Bold.ttf Tajawal-Bold.ttf Almarai-Bold.ttf Vazirmatn-Bold.ttf NotoNaskhArabic-Bold.ttf NotoSansDevanagari.ttf Hind-Bold.ttf Poppins-Bold.ttf NotoSansBengali-Bold.ttf Outfit-Bold.ttf Montserrat-Bold.ttf Roboto-Bold.ttf; do
-            curl -sL --max-time 15 "https://www.onairplayout.com/uploads/fonts/${F_BN}" -o "$HOME/.local/share/fonts/${F_BN}" || true
-          done
-          for F_BN in JameelNooriNastaleeq.ttf NotoNastaliqUrdu.ttf Gulzar-Regular.ttf Cairo-Bold.ttf Tajawal-Bold.ttf Almarai-Bold.ttf Vazirmatn-Bold.ttf NotoNaskhArabic-Bold.ttf ElMessiri-Bold.ttf Amiri-Bold.ttf NotoSansDevanagari.ttf Hind-Bold.ttf NotoSansBengali-Bold.ttf Outfit-Bold.ttf Inter-Bold.ttf Oswald-Bold.ttf BebasNeue-Regular.ttf Montserrat-Bold.ttf Poppins-Bold.ttf Roboto-Bold.ttf; do
-            curl -sL --max-time 15 "https://www.onairplayout.com/uploads/fonts/${F_BN}" -o "$HOME/.local/share/fonts/${F_BN}" || true
-          done
-          for F_URL in $(curl -s "https://www.onairplayout.com/api/fonts/list" 2>/dev/null | jq -r '.customFonts[]?.url // empty' 2>/dev/null); do
+          curl -sL --max-time 15 "https://www.onairplayout.com/fonts/Jameel%20Noori%20Nastaleeq.ttf" -o ~/.local/share/fonts/JameelNooriNastaleeq.ttf &
+          curl -sL --max-time 12 "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf" -o ~/.local/share/fonts/Amiri-Bold.ttf &
+          curl -sL --max-time 12 "https://github.com/google/fonts/raw/main/ofl/notonastaliqurdu/NotoNastaliqUrdu%5Bwght%5D.ttf" -o ~/.local/share/fonts/NotoNastaliqUrdu.ttf &
+          curl -sL --max-time 12 "https://github.com/google/fonts/raw/main/ofl/notosansdevanagari/NotoSansDevanagari%5Bwdth,wght%5D.ttf" -o ~/.local/share/fonts/NotoSansDevanagari.ttf &
+          wait
+          printf "%s\n" JameelNooriNastaleeq.ttf NotoNastaliqUrdu.ttf Gulzar-Regular.ttf Cairo-Bold.ttf Tajawal-Bold.ttf Almarai-Bold.ttf Vazirmatn-Bold.ttf NotoNaskhArabic-Bold.ttf ElMessiri-Bold.ttf Amiri-Bold.ttf NotoSansDevanagari.ttf Hind-Bold.ttf NotoSansBengali-Bold.ttf Outfit-Bold.ttf Inter-Bold.ttf Oswald-Bold.ttf BebasNeue-Regular.ttf Montserrat-Bold.ttf Poppins-Bold.ttf Roboto-Bold.ttf | \
+            xargs -P 8 -I{} sh -c 'curl -sfL --max-time 10 "https://www.onairplayout.com/uploads/fonts/{}" -o "$HOME/.local/share/fonts/{}" 2>/dev/null || true'
+          for F_URL in $(curl -s --max-time 8 "https://www.onairplayout.com/api/fonts/list" 2>/dev/null | jq -r '.customFonts[]?.url // empty' 2>/dev/null); do
             F_BN=$(basename "$F_URL")
-            [ -s "$HOME/.local/share/fonts/${F_BN}" ] || curl -sL --max-time 15 "https://www.onairplayout.com${F_URL}" -o "$HOME/.local/share/fonts/${F_BN}" || true
+            [ -s "$HOME/.local/share/fonts/${F_BN}" ] || curl -sfL --max-time 10 "https://www.onairplayout.com${F_URL}" -o "$HOME/.local/share/fonts/${F_BN}" || true
           done
           fc-cache -f ~/.local/share/fonts || true
           sudo curl -sL --max-time 15 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && sudo chmod a+rx /usr/local/bin/yt-dlp || true
@@ -151,7 +160,7 @@ jobs:
               esac
               E_FPS=$(echo "$S_CTRL" | jq -r '.encoderConfig.fps // 30' 2>/dev/null | awk '{print int($1)}')
               if [ -z "$E_FPS" ] || [ "$E_FPS" -lt 15 ] || [ "$E_FPS" -gt 30 ]; then E_FPS=30; fi
-              X11_FPS="$E_FPS"
+              X11_FPS=$(( E_FPS + 6 ))
               E_GOP=$(( E_FPS * 2 ))
               E_VB=$(echo "$S_CTRL" | jq -r '.encoderConfig.videoBitrate // 2000' 2>/dev/null | awk '{print int($1)}')
               if [ -z "$E_VB" ] || [ "$E_VB" -lt 800 ]; then E_VB=1800; fi
@@ -174,14 +183,14 @@ jobs:
               ENC_SIG="${E_RES}:${E_FPS}:${E_VB}:${E_AB}:${ACT_RTMP}"
 
               # Wait briefly for Clip Feeder to start writing clean MPEG-TS packets to /tmp/muxed_av.ts (never run two writers simultaneously!)
-              for _w in $(seq 1 30); do
+              for _w in $(seq 1 60); do
                 if [ -f /tmp/feeder_av.pid ] && kill -0 $(cat /tmp/feeder_av.pid 2>/dev/null) 2>/dev/null; then
                   break
                 fi
                 sleep 0.1
               done
 
-              echo "[Master-RTMP-Encoder] Starting persistent 24/7 RTMP/UDP stream to $ACT_RTMP @ ${E_RES} ${E_FPS}fps ${ACT_VB}kbps (audio ${E_AB}kbps, 48kHz zero-drift)..."
+              echo "[Master-RTMP-Encoder] Starting persistent 24/7 RTMP/UDP stream to $ACT_RTMP @ ${E_RES} ${E_FPS}fps ${ACT_VB}kbps (audio ${E_AB}kbps, 48kHz zero-drift, live tickers)..."
               if echo "$ACT_RTMP" | grep -q "|"; then
                 TEE_S=""
                 IFS='|' read -ra ADDR <<< "$ACT_RTMP"
@@ -194,10 +203,10 @@ jobs:
                   fi
                 done
                 ffmpeg -nostdin -hide_banner -loglevel warning -nostats -fflags +genpts+igndts \
-                  -probesize 524288 -analyzeduration 500000 -thread_queue_size 4096 -f mpegts -i /tmp/muxed_av.ts \
-                  -thread_queue_size 128 -use_wallclock_as_timestamps 1 -f x11grab -draw_mouse 0 -framerate "$X11_FPS" -video_size 1280x720 -i :99.0 \
+                  -probesize 131072 -analyzeduration 200000 -thread_queue_size 4096 -f mpegts -i /tmp/muxed_av.ts \
+                  -thread_queue_size 4 -f x11grab -draw_mouse 0 -framerate "$X11_FPS" -video_size 1280x720 -i :99.0 \
                   -t "$REM_ENC" \
-                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]setpts=PTS-STARTPTS,fps=${E_FPS},format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:ts_sync_mode=nearest:format=yuv420${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
+                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]setpts=N/(${E_FPS}*TB),format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:format=yuv420${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
                   -c:v libx264 -preset ultrafast -tune zerolatency -bf 0 -pix_fmt yuv420p -b:v "${ACT_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 48000 \
@@ -207,10 +216,10 @@ jobs:
                 OUT_FMT="flv"
                 if echo "$ACT_RTMP" | grep -qiE "^(udp|srt)://"; then OUT_FMT="mpegts"; fi
                 ffmpeg -nostdin -hide_banner -loglevel warning -nostats -fflags +genpts+igndts \
-                  -probesize 524288 -analyzeduration 500000 -thread_queue_size 4096 -f mpegts -i /tmp/muxed_av.ts \
-                  -thread_queue_size 128 -use_wallclock_as_timestamps 1 -f x11grab -draw_mouse 0 -framerate "$X11_FPS" -video_size 1280x720 -i :99.0 \
+                  -probesize 131072 -analyzeduration 200000 -thread_queue_size 4096 -f mpegts -i /tmp/muxed_av.ts \
+                  -thread_queue_size 4 -f x11grab -draw_mouse 0 -framerate "$X11_FPS" -video_size 1280x720 -i :99.0 \
                   -t "$REM_ENC" \
-                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]setpts=PTS-STARTPTS,fps=${E_FPS},format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:ts_sync_mode=nearest:format=yuv420${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
+                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]setpts=N/(${E_FPS}*TB),format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:format=yuv420${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
                   -c:v libx264 -preset ultrafast -tune zerolatency -bf 0 -pix_fmt yuv420p -b:v "${ACT_VB}k" -maxrate "${E_MAX}k" -bufsize "${E_BUF}k" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 48000 \
@@ -579,13 +588,17 @@ jobs:
               TRIM_V=""
               TRIM_A=""
               HAS_AUD="1"
+              EX_VD="$DURATION_VAL"
+              EX_AD="$DURATION_VAL"
+              if [ -s "$INPUT_SOURCE" ]; then
+                PROBE_JSON=$(ffprobe -v error -show_entries stream=codec_type,duration:format=duration -of json "$INPUT_SOURCE" 2>/dev/null || echo "{}")
+                HAS_AUD=$(echo "$PROBE_JSON" | jq -r '[.streams[]? | select(.codec_type=="audio")] | length' 2>/dev/null | awk '{print int($1)}')
+                P_VD=$(echo "$PROBE_JSON" | jq -r '([.streams[]? | select(.codec_type=="video") | .duration // empty][0]) // .format.duration // empty' 2>/dev/null)
+                P_AD=$(echo "$PROBE_JSON" | jq -r '([.streams[]? | select(.codec_type=="audio") | .duration // empty][0]) // .format.duration // empty' 2>/dev/null)
+                if [ -n "$P_VD" ] && [ "$P_VD" != "N/A" ] && [ "$P_VD" != "null" ]; then EX_VD="$P_VD"; fi
+                if [ -n "$P_AD" ] && [ "$P_AD" != "N/A" ] && [ "$P_AD" != "null" ]; then EX_AD="$P_AD"; fi
+              fi
               if [ -n "$INPUT_SOURCE" ]; then
-                HAS_AUD=$(ffprobe -v error -select_streams a:0 -show_entries stream=index -of csv=p=0 "$INPUT_SOURCE" 2>/dev/null | wc -l | awk '{print int($1)}')
-                EX_VD=$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 "$INPUT_SOURCE" 2>/dev/null | head -n 1)
-                if [ -z "$EX_VD" ] || [ "$EX_VD" = "N/A" ]; then
-                  EX_VD=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$INPUT_SOURCE" 2>/dev/null | head -n 1)
-                fi
-                EX_AD=$(ffprobe -v error -select_streams a:0 -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 "$INPUT_SOURCE" 2>/dev/null | head -n 1)
                 PLAY_COUNTS=$(awk -v vd="$EX_VD" -v ad="$EX_AD" -v tc="$TIMECODE" -v fps="$ENC_FPS" 'BEGIN {
                   v = vd + 0; a = ad + 0; t = tc + 0; f = int(fps > 0 ? fps : 30);
                   m = (v > 1 && a > 1) ? (v < a ? v : a) : (v > 1 ? v : a);
