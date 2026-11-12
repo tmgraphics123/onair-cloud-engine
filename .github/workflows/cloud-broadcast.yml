@@ -412,8 +412,11 @@ jobs:
             # Query current program state & playlist from www.onairplayout.com (worker=1 auto-resolves to next Cloud playlist item if Local PC file is selected)
             STATE_JSON=$(curl -s "https://www.onairplayout.com/api/program/state?uid=${OP_UID}&worker=1" 2>/dev/null || echo "{}")
             SETTINGS_JSON=$(curl -s "https://www.onairplayout.com/api/operator/settings?uid=${OP_UID}" 2>/dev/null || echo "{}")
+            MAIN_PL_LEN=$(echo "$SETTINGS_JSON" | jq -r '(.settings.playlist // []) | length' 2>/dev/null | awk '{print int($1)}')
+            if [ -z "$MAIN_PL_LEN" ] || [ "$MAIN_PL_LEN" -lt 0 ]; then MAIN_PL_LEN=0; fi
             PL_LEN=$(echo "$SETTINGS_JSON" | jq -r '((.settings.playlist // []) | length) + ((.settings.gapFiller // []) | length)' 2>/dev/null | awk '{print int($1)}')
             if [ -z "$PL_LEN" ] || [ "$PL_LEN" -lt 0 ]; then PL_LEN=0; fi
+            IS_CUR_GF=$(echo "$STATE_JSON" | jq -r '.programItem.isGapFiller // false' 2>/dev/null || echo "false")
 
             VIDEO_NAME=$(echo "$STATE_JSON" | jq -r '.programItem.name // empty' 2>/dev/null || echo "")
             if [ "$VIDEO_NAME" = "null" ]; then VIDEO_NAME=""; fi
@@ -423,7 +426,7 @@ jobs:
             if [ -z "$DURATION_VAL" ] || [ "$DURATION_VAL" -le 5 ]; then DURATION_VAL=1919; fi
             TIMECODE=$(echo "$STATE_JSON" | jq -r '.timecode // 0' 2>/dev/null | awk '{print int($1)}')
             CUR_CHECK_CLIP=$(echo "$VIDEO_NAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
-            if [ -n "$LAST_FINISHED_CLIP" ] && [ "$PL_LEN" -gt 1 ] && [ "$CUR_CHECK_CLIP" = "$LAST_FINISHED_CLIP" ]; then
+            if [ -n "$LAST_FINISHED_CLIP" ] && { [ "$IS_CUR_GF" != "true" ] || [ "$MAIN_PL_LEN" -gt 0 ] || [ "$PL_LEN" -gt 1 ]; } && [ "$CUR_CHECK_CLIP" = "$LAST_FINISHED_CLIP" ]; then
               ADV_TRY=$(curl -s -X POST "https://www.onairplayout.com/api/program/live-timecode?uid=${OP_UID}&from=worker" \
                 -H "Content-Type: application/json" \
                 -d "{\"uid\":\"${OP_UID}\",\"timecode\":$DURATION_VAL,\"fromWorker\":true,\"advanceNext\":true,\"clipName\":\"$CUR_CHECK_CLIP\"}" 2>/dev/null || echo "{}")
@@ -567,6 +570,9 @@ jobs:
 
                 ST_NOW=$(curl -s "https://www.onairplayout.com/api/program/state?uid=${OP_UID}&worker=1" 2>/dev/null || echo "{}")
                 SET_NOW=$(curl -s "https://www.onairplayout.com/api/operator/settings?uid=${OP_UID}" 2>/dev/null || echo "{}")
+                MAIN_PL_LEN_NOW=$(echo "$SET_NOW" | jq -r '(.settings.playlist // []) | length' 2>/dev/null | awk '{print int($1)}')
+                if [ -z "$MAIN_PL_LEN_NOW" ] || [ "$MAIN_PL_LEN_NOW" -lt 0 ]; then MAIN_PL_LEN_NOW=0; fi
+                MAIN_PL_LEN=$MAIN_PL_LEN_NOW
                 PL_LEN_NOW=$(echo "$SET_NOW" | jq -r '((.settings.playlist // []) | length) + ((.settings.gapFiller // []) | length)' 2>/dev/null | awk '{print int($1)}')
                 if [ -z "$PL_LEN_NOW" ] || [ "$PL_LEN_NOW" -lt 0 ]; then PL_LEN_NOW=0; fi
                 NAME_NOW=$(echo "$ST_NOW" | jq -r '.programItem.name // empty' 2>/dev/null || echo "")
@@ -604,10 +610,13 @@ jobs:
                   SAFE_CUR=$(echo "$VIDEO_NAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
 
                   IS_SAME_CLIP="false"
-                  if [ -n "$YT_ID" ] && [ -n "$NEW_YT" ] && [ "$YT_ID" = "$NEW_YT" ]; then
-                    IS_SAME_CLIP="true"
-                  elif [ -z "$YT_ID" ] && [ -z "$NEW_YT" ] && [ "$SAFE_NOW" = "$SAFE_CUR" ]; then
-                    IS_SAME_CLIP="true"
+                  NEW_IS_GF=$(echo "$ST_NOW" | jq -r '.programItem.isGapFiller // false' 2>/dev/null || echo "false")
+                  if [ "$IS_CUR_GF" = "$NEW_IS_GF" ]; then
+                    if [ -n "$YT_ID" ] && [ -n "$NEW_YT" ] && [ "$YT_ID" = "$NEW_YT" ]; then
+                      IS_SAME_CLIP="true"
+                    elif [ -z "$YT_ID" ] && [ -z "$NEW_YT" ] && [ "$SAFE_NOW" = "$SAFE_CUR" ]; then
+                      IS_SAME_CLIP="true"
+                    fi
                   fi
 
                   if [ "$IS_SAME_CLIP" = "false" ]; then
@@ -627,7 +636,7 @@ jobs:
                   NOW_TS=$(date +%s)
                   ELAPSED=$(( NOW_TS - FF_START_TS ))
                   RAW_TC=$(( TIMECODE + ELAPSED ))
-                  if [ "$PL_LEN" -le 1 ] && [ "$DURATION_VAL" -gt 5 ]; then
+                  if [ "$IS_CUR_GF" = "true" ] && [ "$MAIN_PL_LEN" -eq 0 ] && [ "$PL_LEN" -le 1 ] && [ "$DURATION_VAL" -gt 5 ]; then
                     LIVE_TC=$(( RAW_TC % DURATION_VAL ))
                   else
                     LIVE_TC=$RAW_TC
@@ -801,7 +810,7 @@ jobs:
             # Only advance/reset timecode if a video clip actually played to its end AND was not already switched by WATCHER_PID!
             if [ -n "$VIDEO_NAME" ] && [ ! -f /tmp/clip_switched_by_watcher ] && [ "$DURATION_VAL" -gt 10 ] && [ "$FINAL_REACHED" -ge $(( DURATION_VAL - 8 )) ]; then
               LAST_FINISHED_CLIP="$SAFE_CUR_CLIP"
-              if [ "$PL_LEN" -gt 1 ]; then
+              if [ "$IS_CUR_GF" != "true" ] || [ "$MAIN_PL_LEN" -gt 0 ] || [ "$PL_LEN" -gt 1 ]; then
                 curl -s -X POST "https://www.onairplayout.com/api/program/live-timecode?uid=${OP_UID}&from=worker" \
                   -H "Content-Type: application/json" \
                   -d "{\"uid\":\"${OP_UID}\",\"timecode\":$DURATION_VAL,\"fromWorker\":true,\"advanceNext\":true,\"clipName\":\"$SAFE_CUR_CLIP\",\"ytId\":\"$YT_ID\"}" >/dev/null 2>&1 || true
