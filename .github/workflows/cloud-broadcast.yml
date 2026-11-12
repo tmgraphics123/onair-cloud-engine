@@ -135,22 +135,31 @@ jobs:
             local TARGET="${TW}x${TH}"
             local CUR=""
             if [ -f /tmp/current_stage_res ]; then CUR=$(cat /tmp/current_stage_res 2>/dev/null || echo ""); fi
-            if [ "$CUR" = "$TARGET" ] && pgrep -f "Xvfb :99" >/dev/null 2>&1 && pgrep -f "chrome-prof" >/dev/null 2>&1; then
-              return 0
+            if [ "$CUR" = "$TARGET" ] && pgrep -f "Xvfb :99" >/dev/null 2>&1; then
+              if pgrep -f "chrome-prof" >/dev/null 2>&1 && pgrep -f "chrome-prof.*--type=renderer" >/dev/null 2>&1; then
+                return 0
+              fi
+              echo "[Stage-Display] Healing Chrome renderer on existing ${TARGET} Xvfb :99 without dropping X11..."
+              pkill -9 -f "chrome-prof" 2>/dev/null || true
+              sleep 0.5
+            else
+              echo "[Stage-Display] Launching native ${TARGET} Xvfb + Chrome 1:1 Broadcast Overlay Stage..."
+              pkill -9 -f "chrome-prof" 2>/dev/null || true
+              pkill -f "Xvfb :99" 2>/dev/null || true
+              sleep 1
+              rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null || true
+              Xvfb :99 -screen 0 "${TW}x${TH}x24" -ac +extension GLX +render -noreset &
+              export DISPLAY=:99
+              sleep 1.5
             fi
-            echo "[Stage-Display] Launching native ${TARGET} Xvfb + Chrome 1:1 Broadcast Overlay Stage..."
-            pkill -f "chrome-prof" 2>/dev/null || true
-            pkill -f "Xvfb :99" 2>/dev/null || true
-            sleep 1
-            rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null || true
-            Xvfb :99 -screen 0 "${TW}x${TH}x24" -ac +extension GLX +render -noreset &
             export DISPLAY=:99
-            sleep 1.5
             mkdir -p /tmp/chrome-prof
             rm -f /tmp/chrome-prof/SingletonLock /tmp/chrome-prof/SingletonCookie /tmp/chrome-prof/SingletonSocket 2>/dev/null || true
             touch "/tmp/chrome-prof/First Run"
             TZ=Asia/Karachi google-chrome \
               --no-sandbox \
+              --disable-dev-shm-usage \
+              --mute-audio \
               --font-render-hinting=none \
               --force-device-scale-factor=1 \
               --no-first-run \
@@ -170,14 +179,14 @@ jobs:
               --hide-scrollbars \
               --disable-infobars \
               --disable-notifications \
-              --app="$FEED_URL" &
+              --app="${FEED_URL}&_cb=$(date +%s)" &
             echo "$TARGET" > /tmp/current_stage_res
             echo "Waiting 5 seconds for ${TARGET} Output Feed & Urdu Tickers to render in Pakistan Time (Asia/Karachi)..."
             sleep 5
           }
 
           INIT_CTRL=$(curl -s "https://www.onairplayout.com/api/stream/status?uid=${OP_UID}&worker=1" 2>/dev/null || echo '{"active":true}')
-          INIT_RES=$(echo "$INIT_CTRL" | jq -r '.encoderConfig.resolution // "1280x720"' 2>/dev/null || echo "1280x720")
+          INIT_RES=$(echo "$INIT_CTRL" | jq -r '.encoderConfig.resolution // "854x480"' 2>/dev/null || echo "854x480")
           if [ "$INIT_RES" = "1920x1080" ]; then
             ensure_stage_display 1920 1080
           else
@@ -185,7 +194,21 @@ jobs:
           fi
           export DISPLAY=:99
 
-          # 4. Create Persistent Single Muxed A/V FIFO (/tmp/muxed_av.ts) & Launch 24/7 Non-Stop Master RTMP Encoder
+          STAGE_WD_END=$(( $(date +%s) + DURATION_SEC ))
+          (
+            while [ $(date +%s) -lt $STAGE_WD_END ]; do
+              sleep 12
+              if pgrep -f "Xvfb :99" >/dev/null 2>&1 && ! pgrep -f "chrome-prof.*--type=renderer" >/dev/null 2>&1; then
+                CUR_STG=$(cat /tmp/current_stage_res 2>/dev/null || echo "1280x720")
+                W_STG=$(echo "$CUR_STG" | cut -dx -f1)
+                H_STG=$(echo "$CUR_STG" | cut -dx -f2)
+                ensure_stage_display "${W_STG:-1280}" "${H_STG:-720}"
+              fi
+            done
+          ) &
+          STAGE_WATCHDOG_PID=$!
+
+          # 4. Create Persistent Single Muxed A/V FIFO (/tmp/muxed_av.ts) & Launch 24/7 Non-Stop Master RTMP Encode
           # Decoding Video + Audio together inside ONE single Clip Feeder FFmpeg process with accurate seek (no -noaccurate_seek),
           # fps=start_time=0, and aresample=async=1000:first_pts=0 guarantees 100.0% frame-locked lip-sync across seeks and clip switches!
           rm -f /tmp/muxed_av.ts /tmp/feeder_av.pid /tmp/feeder_av.spec
@@ -218,8 +241,8 @@ jobs:
               if [ "$E_FPS" -gt 60 ]; then E_FPS=60; fi
               E_GOP=$(( E_FPS * 2 ))
 
-              E_VB=$(echo "$S_CTRL" | jq -r '.encoderConfig.videoBitrate // 2500' 2>/dev/null | awk '{print int($1)}')
-              if [ -z "$E_VB" ] || [ "$E_VB" -lt 800 ]; then E_VB=2500; fi
+              E_VB=$(echo "$S_CTRL" | jq -r '.encoderConfig.videoBitrate // 2000' 2>/dev/null | awk '{print int($1)}')
+              if [ -z "$E_VB" ] || [ "$E_VB" -lt 800 ]; then E_VB=2000; fi
               if [ "$E_VB" -gt 8000 ]; then
                 ACT_VB=8000
               else
@@ -247,7 +270,7 @@ jobs:
               # Ensure Clip Feeder matches exact stage resolution & FPS before probing /tmp/muxed_av.ts
               CUR_F_SPEC=$(cat /tmp/feeder_av.spec 2>/dev/null || echo "")
               if [ -n "$CUR_F_SPEC" ] && [ "$CUR_F_SPEC" != "$DESIRED_SPEC" ]; then
-                touch /tmp/clip_switched_by_watcher
+                touch /tmp/clip_switched_by_watche
                 if [ -f /tmp/feeder_av.pid ]; then kill -TERM $(cat /tmp/feeder_av.pid 2>/dev/null) 2>/dev/null || true; fi
                 sleep 0.3
                 dd if=/tmp/muxed_av.ts iflag=nonblock of=/dev/null bs=65536 count=8 2>/dev/null || true
@@ -281,7 +304,7 @@ jobs:
                   -filter_complex_threads 4 \
                   -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]setpts=PTS-STARTPTS,fps=${E_FPS},setpts=N/(${E_FPS}*TB),format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:format=yuv420${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
-                  -c:v libx264 -preset "$X264_PRESET" -profile:v high -level 4.2 -bf 2 -pix_fmt yuv420p -b:v "${ACT_VB}k" -minrate "${ACT_VB}k" -maxrate "${ACT_VB}k" -bufsize "${E_BUF}k" -x264-params "nal-hrd=cbr:force-cfr=1:rc-lookahead=12" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
+                  -c:v libx264 -preset "$X264_PRESET" -profile:v high -bf 2 -pix_fmt yuv420p -b:v "${ACT_VB}k" -minrate "${ACT_VB}k" -maxrate "${ACT_VB}k" -bufsize "${E_BUF}k" -x264-params "nal-hrd=cbr:force-cfr=1:rc-lookahead=12" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 48000 \
                   -flags +global_header -f tee "$TEE_S" &
                 M_ENC_PID=$!
@@ -295,7 +318,7 @@ jobs:
                   -filter_complex_threads 4 \
                   -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]setpts=PTS-STARTPTS,fps=${E_FPS},setpts=N/(${E_FPS}*TB),format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:format=yuv420${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
-                  -c:v libx264 -preset "$X264_PRESET" -profile:v high -level 4.2 -bf 2 -pix_fmt yuv420p -b:v "${ACT_VB}k" -minrate "${ACT_VB}k" -maxrate "${ACT_VB}k" -bufsize "${E_BUF}k" -x264-params "nal-hrd=cbr:force-cfr=1:rc-lookahead=12" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
+                  -c:v libx264 -preset "$X264_PRESET" -profile:v high -bf 2 -pix_fmt yuv420p -b:v "${ACT_VB}k" -minrate "${ACT_VB}k" -maxrate "${ACT_VB}k" -bufsize "${E_BUF}k" -x264-params "nal-hrd=cbr:force-cfr=1:rc-lookahead=12" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 48000 \
                   -f "$OUT_FMT" "$ACT_RTMP" &
                 M_ENC_PID=$!
@@ -316,8 +339,8 @@ jobs:
                   N_FPS=$(echo "$CHK_C" | jq -r '.encoderConfig.fps // 30' 2>/dev/null | awk '{print int($1)}')
                   if [ -z "$N_FPS" ] || [ "$N_FPS" -lt 15 ]; then N_FPS=30; fi
                   if [ "$N_FPS" -gt 60 ]; then N_FPS=60; fi
-                  N_VB=$(echo "$CHK_C" | jq -r '.encoderConfig.videoBitrate // 2500' 2>/dev/null | awk '{print int($1)}')
-                  if [ -z "$N_VB" ] || [ "$N_VB" -lt 800 ]; then N_VB=2500; fi
+                  N_VB=$(echo "$CHK_C" | jq -r '.encoderConfig.videoBitrate // 2000' 2>/dev/null | awk '{print int($1)}')
+                  if [ -z "$N_VB" ] || [ "$N_VB" -lt 800 ]; then N_VB=2000; fi
                   if [ "$N_VB" -gt 8000 ]; then N_VB=8000; fi
                   N_AB=$(echo "$CHK_C" | jq -r '.encoderConfig.audioBitrate // 128' 2>/dev/null | awk '{print int($1)}')
                   if [ -z "$N_AB" ] || [ "$N_AB" -lt 64 ]; then N_AB=128; fi
@@ -337,7 +360,7 @@ jobs:
               kill "$CFG_WATCH_PID" 2>/dev/null || true
               # Restart Clip Feeder on Master Encoder restart & drain pipe so /tmp/muxed_av.ts starts on a fresh PAT/PMT boundary
               if [ -f /tmp/feeder_av.pid ]; then
-                touch /tmp/clip_switched_by_watcher
+                touch /tmp/clip_switched_by_watche
                 kill -TERM $(cat /tmp/feeder_av.pid 2>/dev/null) 2>/dev/null || true
               fi
               sleep 0.3
@@ -510,7 +533,7 @@ jobs:
 
             FF_START_TS=$(date +%s)
             SAFE_CUR_CLIP=$(echo "$VIDEO_NAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
-            rm -f /tmp/clip_switched_by_watcher
+            rm -f /tmp/clip_switched_by_watche
 
             # Background watcher:
             # 1) Checks if active clip changed (or playlist emptied/populated) BEFORE posting timecode
@@ -523,7 +546,7 @@ jobs:
                 CTRL_NOW=$(curl -s "https://www.onairplayout.com/api/stream/status?uid=${OP_UID}&worker=1" 2>/dev/null || echo '{"active":true}')
                 ACT_NOW=$(echo "$CTRL_NOW" | jq -r '.active // true' 2>/dev/null || echo "true")
                 if [ "$ACT_NOW" = "false" ]; then
-                  touch /tmp/clip_switched_by_watcher
+                  touch /tmp/clip_switched_by_watche
                   if [ -f /tmp/feeder_av.pid ]; then kill -INT $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
                   break
                 fi
@@ -538,7 +561,7 @@ jobs:
 
                 # Case A: Playlist was empty (no video) and operator added a video -> switch from black screen to video!
                 if [ -z "$VIDEO_NAME" ] && [ -n "$NAME_NOW" ]; then
-                  touch /tmp/clip_switched_by_watcher
+                  touch /tmp/clip_switched_by_watche
                   echo "Playlist populated with $NAME_NOW -> switching from Tickers-Only Black Screen to Video!"
                   if [ -f /tmp/feeder_av.pid ]; then kill -INT $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
                   break
@@ -546,7 +569,7 @@ jobs:
 
                 # Case B: Video was playing and operator emptied the playlist -> stop video and switch to Tickers-Only Black Screen!
                 if [ -n "$VIDEO_NAME" ] && [ -z "$NAME_NOW" ]; then
-                  touch /tmp/clip_switched_by_watcher
+                  touch /tmp/clip_switched_by_watche
                   echo "Playlist cleared -> stopping video and switching to Tickers-Only Black Screen!"
                   if [ -f /tmp/feeder_av.pid ]; then kill -INT $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
                   break
@@ -574,7 +597,7 @@ jobs:
                   fi
 
                   if [ "$IS_SAME_CLIP" = "false" ]; then
-                    touch /tmp/clip_switched_by_watcher
+                    touch /tmp/clip_switched_by_watche
                     if [ -n "$NEW_YT" ] && [ ! -s "/tmp/media_cache/yt_${NEW_YT}.mp4" ]; then
                       if ! curl -sI -f "http://84.235.248.136/uploads/yt_${NEW_YT}.mp4" >/dev/null 2>&1; then
                         curl -s -X POST "https://www.onairplayout.com/api/youtube/prefetch?ytId=${NEW_YT}" >/dev/null 2>&1 || true
@@ -604,7 +627,7 @@ jobs:
                     if [ -n "$STUDIO_TC" ] && [ "$STUDIO_TC" -ge 0 ]; then
                       TC_DIFF=$(( STUDIO_TC - LIVE_TC ))
                       if [ "$TC_DIFF" -gt 10 ] || [ "$TC_DIFF" -lt -10 ]; then
-                        touch /tmp/clip_switched_by_watcher
+                        touch /tmp/clip_switched_by_watche
                         echo "Studio timecode seek detected ($LIVE_TC -> $STUDIO_TC) -> seamlessly seeking single A/V Clip Feeder without dropping RTMP..."
                         if [ -f /tmp/feeder_av.pid ]; then kill -INT $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
                         break
@@ -775,5 +798,5 @@ jobs:
               fi
             fi
           done
-          kill $MASTER_ENC_SUP_PID 2>/dev/null || true
+          kill $MASTER_ENC_SUP_PID $STAGE_WATCHDOG_PID 2>/dev/null || true
           exec 3>&-
