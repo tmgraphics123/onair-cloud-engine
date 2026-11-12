@@ -136,11 +136,12 @@ jobs:
             local CUR=""
             if [ -f /tmp/current_stage_res ]; then CUR=$(cat /tmp/current_stage_res 2>/dev/null || echo ""); fi
             if [ "$CUR" = "$TARGET" ] && pgrep -f "Xvfb :99" >/dev/null 2>&1; then
-              if pgrep -f "chrome-prof" >/dev/null 2>&1 && pgrep -f "chrome-prof.*--type=renderer" >/dev/null 2>&1; then
+              if pgrep -f "chrome-prof" >/dev/null 2>&1 && pgrep -f -- "--type=renderer" >/dev/null 2>&1; then
                 return 0
               fi
               echo "[Stage-Display] Healing Chrome renderer on existing ${TARGET} Xvfb :99 without dropping X11..."
               pkill -9 -f "chrome-prof" 2>/dev/null || true
+              pkill -9 -f "/opt/google/chrome/chrome" 2>/dev/null || true
               sleep 0.5
             else
               echo "[Stage-Display] Launching native ${TARGET} Xvfb + Chrome 1:1 Broadcast Overlay Stage..."
@@ -197,12 +198,15 @@ jobs:
           STAGE_WD_END=$(( $(date +%s) + DURATION_SEC ))
           (
             while [ $(date +%s) -lt $STAGE_WD_END ]; do
-              sleep 12
-              if pgrep -f "Xvfb :99" >/dev/null 2>&1 && ! pgrep -f "chrome-prof.*--type=renderer" >/dev/null 2>&1; then
-                CUR_STG=$(cat /tmp/current_stage_res 2>/dev/null || echo "1280x720")
-                W_STG=$(echo "$CUR_STG" | cut -dx -f1)
-                H_STG=$(echo "$CUR_STG" | cut -dx -f2)
-                ensure_stage_display "${W_STG:-1280}" "${H_STG:-720}"
+              sleep 15
+              if pgrep -f "Xvfb :99" >/dev/null 2>&1 && ! pgrep -f -- "--type=renderer" >/dev/null 2>&1; then
+                sleep 3
+                if pgrep -f "Xvfb :99" >/dev/null 2>&1 && ! pgrep -f -- "--type=renderer" >/dev/null 2>&1; then
+                  CUR_STG=$(cat /tmp/current_stage_res 2>/dev/null || echo "1280x720")
+                  W_STG=$(echo "$CUR_STG" | cut -dx -f1)
+                  H_STG=$(echo "$CUR_STG" | cut -dx -f2)
+                  ensure_stage_display "${W_STG:-1280}" "${H_STG:-720}"
+                fi
               fi
             done
           ) &
