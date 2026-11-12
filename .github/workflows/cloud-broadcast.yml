@@ -70,19 +70,20 @@ jobs:
             exit 1
           fi
           mkdir -p ~/.local/share/fonts ~/.config/fontconfig
-          (curl -sfL --max-time 20 "https://cdn.jsdelivr.net/gh/nicholasgasior/gfonts-urdu@master/JameelNooriNastaleeq.ttf" -o ~/.local/share/fonts/JameelNooriNastaleeq.ttf || curl -sfL --max-time 90 "http://84.235.248.136/uploads/fonts/JameelNooriNastaleeq.ttf" -o ~/.local/share/fonts/JameelNooriNastaleeq.ttf) &
-          curl -sfL --max-time 45 "http://84.235.248.136/uploads/fonts/Alvi_Nastaleeq.ttf" -o ~/.local/share/fonts/Alvi_Nastaleeq.ttf &
-          curl -sfL --max-time 30 "http://84.235.248.136/uploads/fonts/Nafees%20Nastaleeq.ttf" -o "$HOME/.local/share/fonts/Nafees Nastaleeq.ttf" &
-          curl -sfL --max-time 30 "http://84.235.248.136/uploads/fonts/Urdu_Emad_Nastaliq.ttf" -o ~/.local/share/fonts/Urdu_Emad_Nastaliq.ttf &
+          ORIG_RESOLVE="--resolve www.onairplayout.com:443:84.235.248.136"
+          (curl -sfL --max-time 20 "https://cdn.jsdelivr.net/gh/nicholasgasior/gfonts-urdu@master/JameelNooriNastaleeq.ttf" -o ~/.local/share/fonts/JameelNooriNastaleeq.ttf || curl -skfL $ORIG_RESOLVE --max-time 60 "https://www.onairplayout.com/uploads/fonts/JameelNooriNastaleeq.ttf" -o ~/.local/share/fonts/JameelNooriNastaleeq.ttf) &
+          curl -skfL $ORIG_RESOLVE --max-time 45 "https://www.onairplayout.com/uploads/fonts/Alvi_Nastaleeq.ttf" -o ~/.local/share/fonts/Alvi_Nastaleeq.ttf &
+          curl -skfL $ORIG_RESOLVE --max-time 30 "https://www.onairplayout.com/uploads/fonts/Nafees%20Nastaleeq.ttf" -o "$HOME/.local/share/fonts/Nafees Nastaleeq.ttf" &
+          curl -skfL $ORIG_RESOLVE --max-time 30 "https://www.onairplayout.com/uploads/fonts/Urdu_Emad_Nastaliq.ttf" -o ~/.local/share/fonts/Urdu_Emad_Nastaliq.ttf &
           wait
           if [ -s ~/.local/share/fonts/JameelNooriNastaleeq.ttf ]; then
             cp -f ~/.local/share/fonts/JameelNooriNastaleeq.ttf "$HOME/.local/share/fonts/Jameel Noori Nastaleeq.ttf"
           fi
           printf "%s\n" NotoNastaliqUrdu.ttf Gulzar-Regular.ttf Cairo-Bold.ttf Tajawal-Bold.ttf Almarai-Bold.ttf Vazirmatn-Bold.ttf NotoNaskhArabic-Bold.ttf ElMessiri-Bold.ttf Amiri-Bold.ttf NotoSansDevanagari.ttf Hind-Bold.ttf NotoSansBengali-Bold.ttf Outfit-Bold.ttf Inter-Bold.ttf Oswald-Bold.ttf BebasNeue-Regular.ttf Montserrat-Bold.ttf Poppins-Bold.ttf Roboto-Bold.ttf | \
-            xargs -P 6 -I{} sh -c 'curl -sfL --max-time 20 "http://84.235.248.136/uploads/fonts/{}" -o "$HOME/.local/share/fonts/{}" 2>/dev/null || true'
-          for F_URL in $(curl -s --max-time 8 "https://www.onairplayout.com/api/fonts/list" 2>/dev/null | jq -r '.customFonts[]?.url // empty' 2>/dev/null); do
+            xargs -P 6 -I{} sh -c 'curl -skfL --resolve www.onairplayout.com:443:84.235.248.136 --max-time 20 "https://www.onairplayout.com/uploads/fonts/{}" -o "$HOME/.local/share/fonts/{}" 2>/dev/null || true'
+          for F_URL in $(curl -sk $ORIG_RESOLVE --max-time 8 "https://www.onairplayout.com/api/fonts/list" 2>/dev/null | jq -r '.customFonts[]?.url // empty' 2>/dev/null); do
             F_BN=$(python3 -c "import urllib.parse, sys, os; print(os.path.basename(urllib.parse.unquote(sys.argv[1])))" "$F_URL" 2>/dev/null || basename "$F_URL")
-            [ -s "$HOME/.local/share/fonts/${F_BN}" ] || curl -sfL --max-time 15 "http://84.235.248.136${F_URL}" -o "$HOME/.local/share/fonts/${F_BN}" || true
+            [ -s "$HOME/.local/share/fonts/${F_BN}" ] || curl -skfL $ORIG_RESOLVE --max-time 15 "https://www.onairplayout.com${F_URL}" -o "$HOME/.local/share/fonts/${F_BN}" || true
           done
           # Purge any non-font/HTML file so fontconfig is 100% pure binary fonts
           for FF in "$HOME/.local/share/fonts/"*; do
@@ -157,9 +158,19 @@ jobs:
             mkdir -p /tmp/chrome-prof
             rm -f /tmp/chrome-prof/SingletonLock /tmp/chrome-prof/SingletonCookie /tmp/chrome-prof/SingletonSocket 2>/dev/null || true
             touch "/tmp/chrome-prof/First Run"
+            # Pre-verify direct origin serves valid studio root HTML before opening Chrome (zero error-page risk)
+            for _chk in 1 2 3 4 5; do
+              if curl -sk --max-time 6 --resolve www.onairplayout.com:443:84.235.248.136 "${FEED_URL}" 2>/dev/null | grep -q 'id="root"'; then
+                break
+              fi
+              sleep 1
+            done
             TZ=Asia/Karachi google-chrome \
               --no-sandbox \
               --disable-dev-shm-usage \
+              --default-background-color=000000ff \
+              --host-resolver-rules="MAP www.onairplayout.com 84.235.248.136,MAP onairplayout.com 84.235.248.136" \
+              --ignore-certificate-errors \
               --mute-audio \
               --font-render-hinting=none \
               --force-device-scale-factor=1 \
@@ -168,7 +179,6 @@ jobs:
               --disable-search-engine-choice-screen \
               --user-data-dir=/tmp/chrome-prof \
               --disable-gpu \
-              --disable-frame-rate-limit \
               --disable-background-timer-throttling \
               --disable-renderer-backgrounding \
               --disable-backgrounding-occluded-windows \
@@ -212,7 +222,7 @@ jobs:
           ) &
           STAGE_WATCHDOG_PID=$!
 
-          # 4. Create Persistent Single Muxed A/V FIFO (/tmp/muxed_av.ts) & Launch 24/7 Non-Stop Master RTMP Encode
+          # 4. Create Persistent Single Muxed A/V FIFO (/tmp/muxed_av.ts) & Launch 24/7 Non-Stop Master RTMP Encoder
           # Decoding Video + Audio together inside ONE single Clip Feeder FFmpeg process with accurate seek (no -noaccurate_seek),
           # fps=start_time=0, and aresample=async=1000:first_pts=0 guarantees 100.0% frame-locked lip-sync across seeks and clip switches!
           rm -f /tmp/muxed_av.ts /tmp/feeder_av.pid /tmp/feeder_av.spec
@@ -274,7 +284,7 @@ jobs:
               # Ensure Clip Feeder matches exact stage resolution & FPS before probing /tmp/muxed_av.ts
               CUR_F_SPEC=$(cat /tmp/feeder_av.spec 2>/dev/null || echo "")
               if [ -n "$CUR_F_SPEC" ] && [ "$CUR_F_SPEC" != "$DESIRED_SPEC" ]; then
-                touch /tmp/clip_switched_by_watche
+                touch /tmp/clip_switched_by_watcher
                 if [ -f /tmp/feeder_av.pid ]; then kill -TERM $(cat /tmp/feeder_av.pid 2>/dev/null) 2>/dev/null || true; fi
                 sleep 0.3
                 dd if=/tmp/muxed_av.ts iflag=nonblock of=/dev/null bs=65536 count=8 2>/dev/null || true
@@ -303,10 +313,10 @@ jobs:
                 done
                 ffmpeg -nostdin -hide_banner -loglevel warning -nostats -fflags +genpts+igndts \
                   -probesize 262144 -analyzeduration 300000 -thread_queue_size 4096 -f mpegts -i /tmp/muxed_av.ts \
-                  -thread_queue_size 64 -f x11grab -draw_mouse 0 -framerate "$E_FPS" -video_size "${STAGE_W}x${STAGE_H}" -i :99.0 \
+                  -thread_queue_size 512 -f x11grab -draw_mouse 0 -framerate "$E_FPS" -video_size "${STAGE_W}x${STAGE_H}" -i :99.0 \
                   -t "$REM_ENC" \
                   -filter_complex_threads 4 \
-                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]setpts=PTS-STARTPTS,fps=${E_FPS},setpts=N/(${E_FPS}*TB),format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:format=yuv420${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
+                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]setpts=PTS-STARTPTS,fps=${E_FPS}:round=near,setpts=N/(${E_FPS}*TB),format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:format=yuv420${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
                   -c:v libx264 -preset "$X264_PRESET" -profile:v high -bf 2 -pix_fmt yuv420p -b:v "${ACT_VB}k" -minrate "${ACT_VB}k" -maxrate "${ACT_VB}k" -bufsize "${E_BUF}k" -x264-params "nal-hrd=cbr:force-cfr=1:rc-lookahead=12" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 48000 \
@@ -317,10 +327,10 @@ jobs:
                 if echo "$ACT_RTMP" | grep -qiE "^(udp|srt)://"; then OUT_FMT="mpegts"; fi
                 ffmpeg -nostdin -hide_banner -loglevel warning -nostats -fflags +genpts+igndts \
                   -probesize 262144 -analyzeduration 300000 -thread_queue_size 4096 -f mpegts -i /tmp/muxed_av.ts \
-                  -thread_queue_size 64 -f x11grab -draw_mouse 0 -framerate "$E_FPS" -video_size "${STAGE_W}x${STAGE_H}" -i :99.0 \
+                  -thread_queue_size 512 -f x11grab -draw_mouse 0 -framerate "$E_FPS" -video_size "${STAGE_W}x${STAGE_H}" -i :99.0 \
                   -t "$REM_ENC" \
                   -filter_complex_threads 4 \
-                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]setpts=PTS-STARTPTS,fps=${E_FPS},setpts=N/(${E_FPS}*TB),format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:format=yuv420${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
+                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]setpts=PTS-STARTPTS,fps=${E_FPS}:round=near,setpts=N/(${E_FPS}*TB),format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:format=yuv420${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
                   -c:v libx264 -preset "$X264_PRESET" -profile:v high -bf 2 -pix_fmt yuv420p -b:v "${ACT_VB}k" -minrate "${ACT_VB}k" -maxrate "${ACT_VB}k" -bufsize "${E_BUF}k" -x264-params "nal-hrd=cbr:force-cfr=1:rc-lookahead=12" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 48000 \
@@ -364,7 +374,7 @@ jobs:
               kill "$CFG_WATCH_PID" 2>/dev/null || true
               # Restart Clip Feeder on Master Encoder restart & drain pipe so /tmp/muxed_av.ts starts on a fresh PAT/PMT boundary
               if [ -f /tmp/feeder_av.pid ]; then
-                touch /tmp/clip_switched_by_watche
+                touch /tmp/clip_switched_by_watcher
                 kill -TERM $(cat /tmp/feeder_av.pid 2>/dev/null) 2>/dev/null || true
               fi
               sleep 0.3
@@ -537,7 +547,7 @@ jobs:
 
             FF_START_TS=$(date +%s)
             SAFE_CUR_CLIP=$(echo "$VIDEO_NAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
-            rm -f /tmp/clip_switched_by_watche
+            rm -f /tmp/clip_switched_by_watcher
 
             # Background watcher:
             # 1) Checks if active clip changed (or playlist emptied/populated) BEFORE posting timecode
@@ -550,7 +560,7 @@ jobs:
                 CTRL_NOW=$(curl -s "https://www.onairplayout.com/api/stream/status?uid=${OP_UID}&worker=1" 2>/dev/null || echo '{"active":true}')
                 ACT_NOW=$(echo "$CTRL_NOW" | jq -r '.active // true' 2>/dev/null || echo "true")
                 if [ "$ACT_NOW" = "false" ]; then
-                  touch /tmp/clip_switched_by_watche
+                  touch /tmp/clip_switched_by_watcher
                   if [ -f /tmp/feeder_av.pid ]; then kill -INT $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
                   break
                 fi
@@ -565,7 +575,7 @@ jobs:
 
                 # Case A: Playlist was empty (no video) and operator added a video -> switch from black screen to video!
                 if [ -z "$VIDEO_NAME" ] && [ -n "$NAME_NOW" ]; then
-                  touch /tmp/clip_switched_by_watche
+                  touch /tmp/clip_switched_by_watcher
                   echo "Playlist populated with $NAME_NOW -> switching from Tickers-Only Black Screen to Video!"
                   if [ -f /tmp/feeder_av.pid ]; then kill -INT $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
                   break
@@ -573,7 +583,7 @@ jobs:
 
                 # Case B: Video was playing and operator emptied the playlist -> stop video and switch to Tickers-Only Black Screen!
                 if [ -n "$VIDEO_NAME" ] && [ -z "$NAME_NOW" ]; then
-                  touch /tmp/clip_switched_by_watche
+                  touch /tmp/clip_switched_by_watcher
                   echo "Playlist cleared -> stopping video and switching to Tickers-Only Black Screen!"
                   if [ -f /tmp/feeder_av.pid ]; then kill -INT $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
                   break
@@ -601,7 +611,7 @@ jobs:
                   fi
 
                   if [ "$IS_SAME_CLIP" = "false" ]; then
-                    touch /tmp/clip_switched_by_watche
+                    touch /tmp/clip_switched_by_watcher
                     if [ -n "$NEW_YT" ] && [ ! -s "/tmp/media_cache/yt_${NEW_YT}.mp4" ]; then
                       if ! curl -sI -f "http://84.235.248.136/uploads/yt_${NEW_YT}.mp4" >/dev/null 2>&1; then
                         curl -s -X POST "https://www.onairplayout.com/api/youtube/prefetch?ytId=${NEW_YT}" >/dev/null 2>&1 || true
@@ -631,7 +641,7 @@ jobs:
                     if [ -n "$STUDIO_TC" ] && [ "$STUDIO_TC" -ge 0 ]; then
                       TC_DIFF=$(( STUDIO_TC - LIVE_TC ))
                       if [ "$TC_DIFF" -gt 10 ] || [ "$TC_DIFF" -lt -10 ]; then
-                        touch /tmp/clip_switched_by_watche
+                        touch /tmp/clip_switched_by_watcher
                         echo "Studio timecode seek detected ($LIVE_TC -> $STUDIO_TC) -> seamlessly seeking single A/V Clip Feeder without dropping RTMP..."
                         if [ -f /tmp/feeder_av.pid ]; then kill -INT $(cat /tmp/feeder_av.pid) 2>/dev/null || true; fi
                         break
