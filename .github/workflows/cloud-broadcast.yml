@@ -190,7 +190,7 @@ jobs:
               --user-data-dir=/tmp/chrome-prof \
               --disk-cache-size=33554432 \
               --media-cache-size=16777216 \
-              --js-flags="--max-old-space-size=384" \
+              --js-flags="--max-old-space-size=512" \
               --renderer-process-limit=2 \
               --disable-extensions \
               --disable-component-update \
@@ -229,7 +229,6 @@ jobs:
 
           STAGE_WD_END=$(( $(date +%s) + DURATION_SEC ))
           (
-            HIGH_CPU_STRIKE=0
             while [ $(date +%s) -lt $STAGE_WD_END ]; do
               sleep 15
               CUR_STG=$(cat /tmp/current_stage_res 2>/dev/null || echo "1280x720")
@@ -238,30 +237,20 @@ jobs:
               if pgrep -f "Xvfb :99" >/dev/null 2>&1 && ! pgrep -f -- "--type=renderer" >/dev/null 2>&1; then
                 sleep 2
                 if pgrep -f "Xvfb :99" >/dev/null 2>&1 && ! pgrep -f -- "--type=renderer" >/dev/null 2>&1; then
-                  ensure_stage_display "${W_STG:-1280}" "${H_STG:-720}"
-                  HIGH_CPU_STRIKE=0
+                  echo "[Auto-Heal-Watchdog] Chrome renderer exited — relaunching cleanly on live Xvfb..."
+                  ensure_stage_display "${W_STG:-1280}" "${H_STG:-720}" "force"
                   continue
                 fi
               fi
-              # Automatic Memory & CPU Health Self-Healing ("Auto-Fixing") without dropping Xvfb or RTMP!
+              # Emergency Memory Runaway Guard ONLY (in-page ONAIR-AUTO-HEAL-V109 handles zero-blink routine cache trimming!)
               CH_PIDS=$(pgrep -f "chrome-prof" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
               CH_RSS_MB=0
-              CH_CPU_INT=0
               if [ -n "$CH_PIDS" ]; then
                 CH_RSS_MB=$(ps -o rss= -p "$CH_PIDS" 2>/dev/null | awk '{s+=$1} END {print int(s/1024)}')
-                CH_CPU_INT=$(ps -o %cpu= -p "$CH_PIDS" 2>/dev/null | awk '{s+=$1} END {print int(s)}')
               fi
-              if [ "${CH_CPU_INT:-0}" -ge 185 ]; then
-                HIGH_CPU_STRIKE=$(( HIGH_CPU_STRIKE + 1 ))
-              else
-                HIGH_CPU_STRIKE=0
-              fi
-              LAST_HEAL=$(cat /tmp/last_chrome_heal_ts 2>/dev/null || date +%s)
-              SINCE_HEAL=$(( $(date +%s) - LAST_HEAL ))
-              if [ "${CH_RSS_MB:-0}" -ge 850 ] || [ "$HIGH_CPU_STRIKE" -ge 3 ] || [ "$SINCE_HEAL" -ge 5400 ]; then
-                echo "[Auto-Heal-Watchdog] Refreshing Chrome overlay renderer (RSS=${CH_RSS_MB}MB, CPU=${CH_CPU_INT}%, age=${SINCE_HEAL}s) cleanly on live Xvfb..."
+              if [ "${CH_RSS_MB:-0}" -ge 1800 ]; then
+                echo "[Auto-Heal-Watchdog] Emergency memory recovery (RSS=${CH_RSS_MB}MB >= 1800MB) cleanly on live Xvfb..."
                 ensure_stage_display "${W_STG:-1280}" "${H_STG:-720}" "force"
-                HIGH_CPU_STRIKE=0
               fi
             done
           ) &
