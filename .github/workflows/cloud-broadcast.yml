@@ -133,26 +133,36 @@ jobs:
           ensure_stage_display() {
             local TW="$1"
             local TH="$2"
+            local FORCE_HEAL="${3:-}"
             local TARGET="${TW}x${TH}"
             local CUR=""
             if [ -f /tmp/current_stage_res ]; then CUR=$(cat /tmp/current_stage_res 2>/dev/null || echo ""); fi
             if [ "$CUR" = "$TARGET" ] && pgrep -f "Xvfb :99" >/dev/null 2>&1; then
-              if pgrep -f "chrome-prof" >/dev/null 2>&1 && pgrep -f -- "--type=renderer" >/dev/null 2>&1; then
+              if [ "$FORCE_HEAL" != "force" ] && pgrep -f "chrome-prof" >/dev/null 2>&1 && pgrep -f -- "--type=renderer" >/dev/null 2>&1; then
                 return 0
               fi
-              echo "[Stage-Display] Healing Chrome renderer on existing ${TARGET} Xvfb :99 without dropping X11..."
+              if [ "$FORCE_HEAL" = "force" ]; then
+                if ! curl -sk --max-time 6 --resolve www.onairplayout.com:443:84.235.248.136 "${FEED_URL}" 2>/dev/null | grep -q 'id="root"'; then
+                  echo "[Stage-Display] Origin busy during scheduled Chrome refresh -> deferring refresh to keep live tickers uninterrupted."
+                  return 0
+                fi
+              fi
+              echo "[Stage-Display] Zero-downtime healing Chrome renderer on existing ${TARGET} Xvfb :99 (FORCE=${FORCE_HEAL:-auto})..."
+              xsetroot -display :99 -solid "#000000" 2>/dev/null || true
               pkill -9 -f "chrome-prof" 2>/dev/null || true
               pkill -9 -f "/opt/google/chrome/chrome" 2>/dev/null || true
-              sleep 0.5
+              sleep 0.4
+              rm -rf /tmp/chrome-prof/Default/Cache /tmp/chrome-prof/Default/"Code Cache" /tmp/chrome-prof/Default/GPUCache 2>/dev/null || true
             else
               echo "[Stage-Display] Launching native ${TARGET} Xvfb + Chrome 1:1 Broadcast Overlay Stage..."
               pkill -9 -f "chrome-prof" 2>/dev/null || true
               pkill -f "Xvfb :99" 2>/dev/null || true
               sleep 1
               rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null || true
-              Xvfb :99 -screen 0 "${TW}x${TH}x24" -ac +extension GLX +render -noreset &
+              Xvfb :99 -screen 0 "${TW}x${TH}x24" -ac +extension GLX +render +extension MIT-SHM -noreset &
               export DISPLAY=:99
               sleep 1.5
+              xsetroot -display :99 -solid "#000000" 2>/dev/null || true
             fi
             export DISPLAY=:99
             mkdir -p /tmp/chrome-prof
@@ -165,7 +175,7 @@ jobs:
               fi
               sleep 1
             done
-            TZ=Asia/Karachi google-chrome \
+            DBUS_SESSION_BUS_ADDRESS=/dev/null TZ=Asia/Karachi google-chrome \
               --no-sandbox \
               --disable-dev-shm-usage \
               --default-background-color=000000ff \
@@ -178,6 +188,13 @@ jobs:
               --no-default-browser-check \
               --disable-search-engine-choice-screen \
               --user-data-dir=/tmp/chrome-prof \
+              --disk-cache-size=33554432 \
+              --media-cache-size=16777216 \
+              --js-flags="--max-old-space-size=384" \
+              --renderer-process-limit=2 \
+              --disable-extensions \
+              --disable-component-update \
+              --disable-features=Translate,OptimizationHints,MediaRouter \
               --disable-gpu \
               --disable-background-timer-throttling \
               --disable-renderer-backgrounding \
@@ -190,10 +207,15 @@ jobs:
               --hide-scrollbars \
               --disable-infobars \
               --disable-notifications \
-              --app="${FEED_URL}&_cb=$(date +%s)" &
+              --app="${FEED_URL}&_cb=$(date +%s)" >/dev/null 2>&1 &
             echo "$TARGET" > /tmp/current_stage_res
-            echo "Waiting 5 seconds for ${TARGET} Output Feed & Urdu Tickers to render in Pakistan Time (Asia/Karachi)..."
-            sleep 5
+            date +%s > /tmp/last_chrome_heal_ts
+            if [ "$FORCE_HEAL" = "force" ]; then
+              sleep 2
+            else
+              echo "Waiting 4 seconds for ${TARGET} Output Feed & Urdu Tickers to render in Pakistan Time (Asia/Karachi)..."
+              sleep 4
+            fi
           }
 
           INIT_CTRL=$(curl -s "https://www.onairplayout.com/api/stream/status?uid=${OP_UID}&worker=1" 2>/dev/null || echo '{"active":true}')
@@ -207,16 +229,39 @@ jobs:
 
           STAGE_WD_END=$(( $(date +%s) + DURATION_SEC ))
           (
+            HIGH_CPU_STRIKE=0
             while [ $(date +%s) -lt $STAGE_WD_END ]; do
               sleep 15
+              CUR_STG=$(cat /tmp/current_stage_res 2>/dev/null || echo "1280x720")
+              W_STG=$(echo "$CUR_STG" | cut -dx -f1)
+              H_STG=$(echo "$CUR_STG" | cut -dx -f2)
               if pgrep -f "Xvfb :99" >/dev/null 2>&1 && ! pgrep -f -- "--type=renderer" >/dev/null 2>&1; then
-                sleep 3
+                sleep 2
                 if pgrep -f "Xvfb :99" >/dev/null 2>&1 && ! pgrep -f -- "--type=renderer" >/dev/null 2>&1; then
-                  CUR_STG=$(cat /tmp/current_stage_res 2>/dev/null || echo "1280x720")
-                  W_STG=$(echo "$CUR_STG" | cut -dx -f1)
-                  H_STG=$(echo "$CUR_STG" | cut -dx -f2)
                   ensure_stage_display "${W_STG:-1280}" "${H_STG:-720}"
+                  HIGH_CPU_STRIKE=0
+                  continue
                 fi
+              fi
+              # Automatic Memory & CPU Health Self-Healing ("Auto-Fixing") without dropping Xvfb or RTMP!
+              CH_PIDS=$(pgrep -f "chrome-prof" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+              CH_RSS_MB=0
+              CH_CPU_INT=0
+              if [ -n "$CH_PIDS" ]; then
+                CH_RSS_MB=$(ps -o rss= -p "$CH_PIDS" 2>/dev/null | awk '{s+=$1} END {print int(s/1024)}')
+                CH_CPU_INT=$(ps -o %cpu= -p "$CH_PIDS" 2>/dev/null | awk '{s+=$1} END {print int(s)}')
+              fi
+              if [ "${CH_CPU_INT:-0}" -ge 185 ]; then
+                HIGH_CPU_STRIKE=$(( HIGH_CPU_STRIKE + 1 ))
+              else
+                HIGH_CPU_STRIKE=0
+              fi
+              LAST_HEAL=$(cat /tmp/last_chrome_heal_ts 2>/dev/null || date +%s)
+              SINCE_HEAL=$(( $(date +%s) - LAST_HEAL ))
+              if [ "${CH_RSS_MB:-0}" -ge 850 ] || [ "$HIGH_CPU_STRIKE" -ge 3 ] || [ "$SINCE_HEAL" -ge 5400 ]; then
+                echo "[Auto-Heal-Watchdog] Refreshing Chrome overlay renderer (RSS=${CH_RSS_MB}MB, CPU=${CH_CPU_INT}%, age=${SINCE_HEAL}s) cleanly on live Xvfb..."
+                ensure_stage_display "${W_STG:-1280}" "${H_STG:-720}" "force"
+                HIGH_CPU_STRIKE=0
               fi
             done
           ) &
@@ -299,7 +344,9 @@ jobs:
                 sleep 0.1
               done
 
-              echo "[Master-RTMP-Encoder] Starting High-Profile 24/7 RTMP/UDP stream to $ACT_RTMP @ ${E_RES} (stage ${STAGE_W}x${STAGE_H}) ${E_FPS}fps ${ACT_VB}kbps preset=${X264_PRESET} (audio ${E_AB}kbps, 48kHz zero-drift, live tickers)..."
+              GRAB_FPS=$(( E_FPS + 3 ))
+              if [ "$GRAB_FPS" -gt 62 ]; then GRAB_FPS=62; fi
+              echo "[Master-RTMP-Encoder] Starting High-Profile 24/7 RTMP/UDP stream to $ACT_RTMP @ ${E_RES} (stage ${STAGE_W}x${STAGE_H}) ${E_FPS}fps (x11grab=${GRAB_FPS}fps q=4 zero-lag) ${ACT_VB}kbps preset=${X264_PRESET} (audio ${E_AB}kbps, 48kHz zero-drift, live tickers)..."
               if echo "$ACT_RTMP" | grep -q "|"; then
                 TEE_S=""
                 IFS='|' read -ra ADDR <<< "$ACT_RTMP"
@@ -312,11 +359,11 @@ jobs:
                   fi
                 done
                 ffmpeg -nostdin -hide_banner -loglevel warning -nostats -fflags +genpts+igndts \
-                  -probesize 262144 -analyzeduration 300000 -thread_queue_size 4096 -f mpegts -i /tmp/muxed_av.ts \
-                  -thread_queue_size 512 -f x11grab -draw_mouse 0 -framerate "$E_FPS" -video_size "${STAGE_W}x${STAGE_H}" -i :99.0 \
+                  -probesize 262144 -analyzeduration 300000 -thread_queue_size 1024 -f mpegts -i /tmp/muxed_av.ts \
+                  -thread_queue_size 4 -f x11grab -draw_mouse 0 -framerate "$GRAB_FPS" -video_size "${STAGE_W}x${STAGE_H}" -i :99.0 \
                   -t "$REM_ENC" \
                   -filter_complex_threads 4 \
-                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]setpts=PTS-STARTPTS,fps=${E_FPS}:round=near,setpts=N/(${E_FPS}*TB),format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:format=yuv420${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
+                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]setpts=N/(${E_FPS}*TB),format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:format=yuv420${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
                   -c:v libx264 -preset "$X264_PRESET" -profile:v high -bf 2 -pix_fmt yuv420p -b:v "${ACT_VB}k" -minrate "${ACT_VB}k" -maxrate "${ACT_VB}k" -bufsize "${E_BUF}k" -x264-params "nal-hrd=cbr:force-cfr=1:rc-lookahead=12" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 48000 \
@@ -326,11 +373,11 @@ jobs:
                 OUT_FMT="flv"
                 if echo "$ACT_RTMP" | grep -qiE "^(udp|srt)://"; then OUT_FMT="mpegts"; fi
                 ffmpeg -nostdin -hide_banner -loglevel warning -nostats -fflags +genpts+igndts \
-                  -probesize 262144 -analyzeduration 300000 -thread_queue_size 4096 -f mpegts -i /tmp/muxed_av.ts \
-                  -thread_queue_size 512 -f x11grab -draw_mouse 0 -framerate "$E_FPS" -video_size "${STAGE_W}x${STAGE_H}" -i :99.0 \
+                  -probesize 262144 -analyzeduration 300000 -thread_queue_size 1024 -f mpegts -i /tmp/muxed_av.ts \
+                  -thread_queue_size 4 -f x11grab -draw_mouse 0 -framerate "$GRAB_FPS" -video_size "${STAGE_W}x${STAGE_H}" -i :99.0 \
                   -t "$REM_ENC" \
                   -filter_complex_threads 4 \
-                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]setpts=PTS-STARTPTS,fps=${E_FPS}:round=near,setpts=N/(${E_FPS}*TB),format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:format=yuv420${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
+                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]setpts=N/(${E_FPS}*TB),format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:format=yuv420${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
                   -c:v libx264 -preset "$X264_PRESET" -profile:v high -bf 2 -pix_fmt yuv420p -b:v "${ACT_VB}k" -minrate "${ACT_VB}k" -maxrate "${ACT_VB}k" -bufsize "${E_BUF}k" -x264-params "nal-hrd=cbr:force-cfr=1:rc-lookahead=12" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 48000 \
@@ -409,12 +456,18 @@ jobs:
             if [ -z "$ENC_FPS" ] || [ "$ENC_FPS" -lt 15 ]; then ENC_FPS=30; fi
             if [ "$ENC_FPS" -gt 60 ]; then ENC_FPS=60; fi
 
+            # Auto-prune /tmp/media_cache if > 6000 MB so 24/7 runner disk never fills up
+            MC_MB=$(du -sm /tmp/media_cache 2>/dev/null | awk '{print int($1)}')
+            if [ "${MC_MB:-0}" -gt 6000 ]; then
+              ls -1tr /tmp/media_cache/*.mp4 2>/dev/null | head -n 4 | xargs -r rm -f 2>/dev/null || true
+            fi
+
             # Query current program state & playlist from www.onairplayout.com (worker=1 auto-resolves to next Cloud playlist item if Local PC file is selected)
             STATE_JSON=$(curl -s "https://www.onairplayout.com/api/program/state?uid=${OP_UID}&worker=1" 2>/dev/null || echo "{}")
-            SETTINGS_JSON=$(curl -s "https://www.onairplayout.com/api/operator/settings?uid=${OP_UID}" 2>/dev/null || echo "{}")
-            MAIN_PL_LEN=$(echo "$SETTINGS_JSON" | jq -r '(.settings.playlist // []) | length' 2>/dev/null | awk '{print int($1)}')
+            curl -s "https://www.onairplayout.com/api/operator/settings?uid=${OP_UID}" -o /tmp/cur_op_settings.json 2>/dev/null || echo "{}" > /tmp/cur_op_settings.json
+            MAIN_PL_LEN=$(jq -r '(.settings.playlist // []) | length' /tmp/cur_op_settings.json 2>/dev/null | awk '{print int($1)}')
             if [ -z "$MAIN_PL_LEN" ] || [ "$MAIN_PL_LEN" -lt 0 ]; then MAIN_PL_LEN=0; fi
-            PL_LEN=$(echo "$SETTINGS_JSON" | jq -r '((.settings.playlist // []) | length) + ((.settings.gapFiller // []) | length)' 2>/dev/null | awk '{print int($1)}')
+            PL_LEN=$(jq -r '((.settings.playlist // []) | length) + ((.settings.gapFiller // []) | length)' /tmp/cur_op_settings.json 2>/dev/null | awk '{print int($1)}')
             if [ -z "$PL_LEN" ] || [ "$PL_LEN" -lt 0 ]; then PL_LEN=0; fi
             IS_CUR_GF=$(echo "$STATE_JSON" | jq -r '.programItem.isGapFiller // false' 2>/dev/null || echo "false")
 
@@ -442,13 +495,13 @@ jobs:
               RECHECK_CLIP=$(echo "$VIDEO_NAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
               if [ "$RECHECK_CLIP" = "$LAST_FINISHED_CLIP" ]; then
                 # Fallback: directly select next item from playlist/gapFiller so finished clip NEVER flashes 0:00 frame!
-                NEXT_FB_JSON=$(echo "$SETTINGS_JSON" | jq -c --arg cur "$VIDEO_NAME" '
+                NEXT_FB_JSON=$(jq -c --arg cur "$VIDEO_NAME" '
                   ((.settings.playlist // []) | if length > 0 then . else (.settings.gapFiller // []) end) as $list |
                   if ($list | length) > 1 then
                     ([$list | to_entries[] | select(.value.name == $cur) | .key][0] // 0) as $idx |
                     $list[(($idx + 1) % ($list | length))]
                   else empty end
-                ' 2>/dev/null || echo "")
+                ' /tmp/cur_op_settings.json 2>/dev/null || echo "")
                 if [ -n "$NEXT_FB_JSON" ] && [ "$NEXT_FB_JSON" != "null" ]; then
                   VIDEO_NAME=$(echo "$NEXT_FB_JSON" | jq -r '.name // empty' 2>/dev/null || echo "$VIDEO_NAME")
                   HF_URL=$(echo "$NEXT_FB_JSON" | jq -r '.hfResolveUrl // empty' 2>/dev/null || echo "")
@@ -569,11 +622,11 @@ jobs:
                 fi
 
                 ST_NOW=$(curl -s "https://www.onairplayout.com/api/program/state?uid=${OP_UID}&worker=1" 2>/dev/null || echo "{}")
-                SET_NOW=$(curl -s "https://www.onairplayout.com/api/operator/settings?uid=${OP_UID}" 2>/dev/null || echo "{}")
-                MAIN_PL_LEN_NOW=$(echo "$SET_NOW" | jq -r '(.settings.playlist // []) | length' 2>/dev/null | awk '{print int($1)}')
+                curl -s "https://www.onairplayout.com/api/operator/settings?uid=${OP_UID}" -o /tmp/watcher_op_settings.json 2>/dev/null || echo "{}" > /tmp/watcher_op_settings.json
+                MAIN_PL_LEN_NOW=$(jq -r '(.settings.playlist // []) | length' /tmp/watcher_op_settings.json 2>/dev/null | awk '{print int($1)}')
                 if [ -z "$MAIN_PL_LEN_NOW" ] || [ "$MAIN_PL_LEN_NOW" -lt 0 ]; then MAIN_PL_LEN_NOW=0; fi
                 MAIN_PL_LEN=$MAIN_PL_LEN_NOW
-                PL_LEN_NOW=$(echo "$SET_NOW" | jq -r '((.settings.playlist // []) | length) + ((.settings.gapFiller // []) | length)' 2>/dev/null | awk '{print int($1)}')
+                PL_LEN_NOW=$(jq -r '((.settings.playlist // []) | length) + ((.settings.gapFiller // []) | length)' /tmp/watcher_op_settings.json 2>/dev/null | awk '{print int($1)}')
                 if [ -z "$PL_LEN_NOW" ] || [ "$PL_LEN_NOW" -lt 0 ]; then PL_LEN_NOW=0; fi
                 NAME_NOW=$(echo "$ST_NOW" | jq -r '.programItem.name // empty' 2>/dev/null || echo "")
                 PATH_NOW=$(echo "$ST_NOW" | jq -r '.programItem.path // empty' 2>/dev/null || echo "")
@@ -661,7 +714,7 @@ jobs:
 
                 if [ "$PL_LEN_NOW" -gt 0 ]; then
                   PL_LEN=$PL_LEN_NOW
-                  for Q_PATH in $(echo "$SET_NOW" | jq -r '((.settings.playlist // [])[0:3][].path // empty), ((.settings.gapFiller // [])[].path // empty)' 2>/dev/null); do
+                  for Q_PATH in $(jq -r '((.settings.playlist // [])[0:3][].path // empty), ((.settings.gapFiller // [])[].path // empty)' /tmp/watcher_op_settings.json 2>/dev/null); do
                     if echo "$Q_PATH" | grep -q "^/uploads/"; then
                       Q_FNAME=$(basename "${Q_PATH%%\?*}" | sed 's/[^a-zA-Z0-9._-]/_/g')
                       Q_LOCAL="/tmp/media_cache/${Q_FNAME}"
@@ -709,7 +762,7 @@ jobs:
                 -c:a mp2 -b:a 256k -ar 48000 -ac 2 \
                 -mpegts_flags +resend_headers+pat_pmt_at_frames \
                 -muxdelay 0 -muxpreload 0 -flush_packets 1 \
-                -f mpegts /tmp/muxed_av.ts &
+                -pkt_size 1316 -f mpegts /tmp/muxed_av.ts &
               FEED_AV_PID=$!
               echo $FEED_AV_PID > /tmp/feeder_av.pid
               wait $FEED_AV_PID 2>/dev/null || true
@@ -773,7 +826,7 @@ jobs:
                   -c:a mp2 -b:a 256k -ar 48000 -ac 2 \
                   -mpegts_flags +resend_headers+pat_pmt_at_frames \
                   -muxdelay 0 -muxpreload 0 -flush_packets 1 \
-                  -f mpegts /tmp/muxed_av.ts &
+                  -pkt_size 1316 -f mpegts /tmp/muxed_av.ts &
               else
                 ffmpeg -nostdin -y -hide_banner -loglevel warning -nostats \
                   $RECON_FLAGS \
@@ -786,13 +839,14 @@ jobs:
                   -c:a mp2 -b:a 256k -ar 48000 -ac 2 \
                   -mpegts_flags +resend_headers+pat_pmt_at_frames \
                   -muxdelay 0 -muxpreload 0 -flush_packets 1 \
-                  -f mpegts /tmp/muxed_av.ts &
+                  -pkt_size 1316 -f mpegts /tmp/muxed_av.ts &
               fi
               FEED_AV_PID=$!
               echo $FEED_AV_PID > /tmp/feeder_av.pid
               wait $FEED_AV_PID 2>/dev/null || true
             fi
 
+            pkill -P $WATCHER_PID 2>/dev/null || true
             kill $WATCHER_PID 2>/dev/null || true
             FINAL_ELAPSED=$(( $(date +%s) - FF_START_TS ))
             if [ "$FINAL_ELAPSED" -lt 3 ] && [ ! -f /tmp/clip_switched_by_watcher ]; then
@@ -804,7 +858,7 @@ jobs:
                 -c:v mpeg2video -q:v 3 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
                 -c:a mp2 -b:a 256k -ar 48000 -ac 2 \
                 -mpegts_flags +resend_headers+pat_pmt_at_frames -muxdelay 0 -muxpreload 0 -flush_packets 1 \
-                -f mpegts /tmp/muxed_av.ts 2>/dev/null || sleep 1
+                -pkt_size 1316 -f mpegts /tmp/muxed_av.ts 2>/dev/null || sleep 1
             fi
             FINAL_REACHED=$(( TIMECODE + FINAL_ELAPSED ))
             # Only advance/reset timecode if a video clip actually played to its end AND was not already switched by WATCHER_PID!
