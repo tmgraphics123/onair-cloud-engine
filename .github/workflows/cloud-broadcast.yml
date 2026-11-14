@@ -36,7 +36,7 @@ jobs:
         run: |
           set +e
           sudo ln -snf /usr/share/zoneinfo/Asia/Karachi /etc/localtime && echo "Asia/Karachi" | sudo tee /etc/timezone >/dev/null
-          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v Xvfb >/dev/null 2>&1; then
+          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v Xvfb >/dev/null 2>&1 || ! command -v openbox >/dev/null 2>&1 || ! command -v xdotool >/dev/null 2>&1; then
             sudo systemctl kill -s SIGKILL apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
             sudo killall -9 unattended-upgr apt apt-get dpkg 2>/dev/null || true
             sudo rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend 2>/dev/null || true
@@ -44,17 +44,17 @@ jobs:
             # Bypass slow/hanging azure.archive.ubuntu.com mirror immediately; use fast HTTPS kernel.org CDN mirror first
             sudo rm -rf /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
             CODENAME=$(. /etc/os-release 2>/dev/null && echo "${VERSION_CODENAME:-noble}")
-            PKGS="xvfb xauth ca-certificates"
+            PKGS="xvfb xauth openbox xdotool libgl1-mesa-dri libegl1 ca-certificates"
             if ! command -v ffmpeg >/dev/null 2>&1; then PKGS="$PKGS ffmpeg"; fi
             printf "deb https://mirrors.edge.kernel.org/ubuntu %s main restricted universe multiverse\ndeb https://mirrors.edge.kernel.org/ubuntu %s-updates main restricted universe multiverse\ndeb https://mirrors.edge.kernel.org/ubuntu %s-security main restricted universe multiverse\n" "$CODENAME" "$CODENAME" "$CODENAME" | sudo tee /etc/apt/sources.list.d/onair-fast.list >/dev/null
             APT_OPTS="-o Acquire::Retries=1 -o Acquire::http::Timeout=8 -o Acquire::https::Timeout=8 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
             timeout 35 sudo DEBIAN_FRONTEND=noninteractive apt-get update $APT_OPTS -y || true
             timeout 45 sudo DEBIAN_FRONTEND=noninteractive apt-get install $APT_OPTS -y --no-install-recommends --fix-missing $PKGS || true
           fi
-          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v Xvfb >/dev/null 2>&1; then
+          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v Xvfb >/dev/null 2>&1 || ! command -v openbox >/dev/null 2>&1 || ! command -v xdotool >/dev/null 2>&1; then
             sudo rm -rf /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
             CODENAME=$(. /etc/os-release 2>/dev/null && echo "${VERSION_CODENAME:-noble}")
-            PKGS="xvfb xauth ca-certificates"
+            PKGS="xvfb xauth openbox xdotool libgl1-mesa-dri libegl1 ca-certificates"
             if ! command -v ffmpeg >/dev/null 2>&1; then PKGS="$PKGS ffmpeg"; fi
             printf "deb http://archive.ubuntu.com/ubuntu %s main restricted universe multiverse\ndeb http://archive.ubuntu.com/ubuntu %s-updates main restricted universe multiverse\n" "$CODENAME" "$CODENAME" | sudo tee /etc/apt/sources.list.d/onair-fallback.list >/dev/null
             timeout 35 sudo DEBIAN_FRONTEND=noninteractive apt-get update -o Acquire::Retries=1 -o Acquire::http::Timeout=8 -y || true
@@ -130,6 +130,88 @@ jobs:
 
           mkdir -p /tmp/media_cache
 
+          focus_chrome_x11() {
+            local FW="$1"
+            local FH="$2"
+            if ! command -v xdotool >/dev/null 2>&1; then return 0; fi
+            for _fi in 1 2 3 4 5 6 7 8; do
+              local WID
+              WID=$(DISPLAY=:99 xdotool search --onlyvisible --name "." 2>/dev/null | tail -n 1)
+              if [ -n "$WID" ]; then
+                DISPLAY=:99 xdotool windowsize "$WID" "$FW" "$FH" windowmove "$WID" 0 0 windowmap "$WID" windowraise "$WID" windowactivate "$WID" windowfocus "$WID" mousemove --window "$WID" 60 60 2>/dev/null || true
+                return 0
+              fi
+              sleep 0.4
+            done
+          }
+
+          launch_chrome_gl_mode() {
+            local MODE="$1"
+            local LW="$2"
+            local LH="$3"
+            pkill -9 -f "chrome-prof" 2>/dev/null || true
+            pkill -9 -f "/opt/google/chrome/chrome" 2>/dev/null || true
+            sleep 0.35
+            mkdir -p /tmp/chrome-prof
+            rm -f /tmp/chrome-prof/SingletonLock /tmp/chrome-prof/SingletonCookie /tmp/chrome-prof/SingletonSocket 2>/dev/null || true
+            rm -rf /tmp/chrome-prof/Default/GPUCache 2>/dev/null || true
+            touch "/tmp/chrome-prof/First Run"
+            local EXTRA_GL=()
+            local ENV_GL="0"
+            case "$MODE" in
+              swangle)
+                EXTRA_GL=(--ozone-platform=x11 --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader --ignore-gpu-blocklist --disable-gpu-sandbox)
+                ;;
+              mesa_gl)
+                ENV_GL="1"
+                EXTRA_GL=(--ozone-platform=x11 --use-gl=angle --use-angle=gl --ignore-gpu-blocklist --disable-gpu-sandbox)
+                ;;
+              swangle_novsync)
+                EXTRA_GL=(--ozone-platform=x11 --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader --ignore-gpu-blocklist --disable-gpu-sandbox --disable-gpu-vsync)
+                ;;
+              mesa_gl_novsync)
+                ENV_GL="1"
+                EXTRA_GL=(--ozone-platform=x11 --use-gl=angle --use-angle=gl --ignore-gpu-blocklist --disable-gpu-sandbox --disable-gpu-vsync)
+                ;;
+              *)
+                EXTRA_GL=(--ozone-platform=x11 --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader --ignore-gpu-blocklist --disable-gpu-sandbox)
+                ;;
+            esac
+            DISPLAY=:99 LIBGL_ALWAYS_SOFTWARE="$ENV_GL" DBUS_SESSION_BUS_ADDRESS=/dev/null TZ=Asia/Karachi google-chrome \
+              --no-sandbox \
+              --disable-dev-shm-usage \
+              --default-background-color=000000ff \
+              --host-resolver-rules="MAP www.onairplayout.com 84.235.248.136,MAP onairplayout.com 84.235.248.136" \
+              --ignore-certificate-errors \
+              --mute-audio \
+              --font-render-hinting=none \
+              --force-device-scale-factor=1 \
+              --no-first-run \
+              --no-default-browser-check \
+              --disable-search-engine-choice-screen \
+              --user-data-dir=/tmp/chrome-prof \
+              --disk-cache-size=33554432 \
+              --media-cache-size=16777216 \
+              --js-flags="--max-old-space-size=512" \
+              --renderer-process-limit=2 \
+              --disable-extensions \
+              --disable-component-update \
+              --disable-features=Translate,OptimizationHints,MediaRouter,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,ThrottleDisplayNoneAndVisibilityHiddenCrossOriginIframes,BackForwardCache,UseEcoQoSForBackgroundProcess \
+              "${EXTRA_GL[@]}" \
+              --disable-background-timer-throttling \
+              --disable-renderer-backgrounding \
+              --disable-backgrounding-occluded-windows \
+              --disable-ipc-flooding-protection \
+              --autoplay-policy=no-user-gesture-required \
+              --window-size="${LW},${LH}" \
+              --window-position=0,0 \
+              --kiosk \
+              --hide-scrollbars \
+              --disable-infobars \
+              --disable-notifications \
+              --app="${FEED_URL}&_cb=$(date +%s)" >/tmp/chrome_out.log 2>/tmp/chrome_err.log &
+          }
+
           ensure_stage_display() {
             local TW="$1"
             local TH="$2"
@@ -149,12 +231,10 @@ jobs:
               fi
               echo "[Stage-Display] Zero-downtime healing Chrome renderer on existing ${TARGET} Xvfb :99 (FORCE=${FORCE_HEAL:-auto})..."
               xsetroot -display :99 -solid "#000000" 2>/dev/null || true
-              pkill -9 -f "chrome-prof" 2>/dev/null || true
-              pkill -9 -f "/opt/google/chrome/chrome" 2>/dev/null || true
-              sleep 0.4
-              rm -rf /tmp/chrome-prof/Default/Cache /tmp/chrome-prof/Default/"Code Cache" /tmp/chrome-prof/Default/GPUCache 2>/dev/null || true
+              pgrep -x openbox >/dev/null 2>&1 || (DISPLAY=:99 openbox --sm-disable >/dev/null 2>&1 &)
+              rm -rf /tmp/chrome-prof/Default/Cache /tmp/chrome-prof/Default/"Code Cache" 2>/dev/null || true
             else
-              echo "[Stage-Display] Launching native ${TARGET} Xvfb + Chrome 1:1 Broadcast Overlay Stage..."
+              echo "[Stage-Display] Launching native ${TARGET} Xvfb + Openbox + Chrome 60Hz ANGLE Broadcast Overlay Stage..."
               pkill -9 -f "chrome-prof" 2>/dev/null || true
               pkill -f "Xvfb :99" 2>/dev/null || true
               sleep 1
@@ -163,11 +243,10 @@ jobs:
               export DISPLAY=:99
               sleep 1.5
               xsetroot -display :99 -solid "#000000" 2>/dev/null || true
+              DISPLAY=:99 openbox --sm-disable >/dev/null 2>&1 &
+              sleep 0.3
             fi
             export DISPLAY=:99
-            mkdir -p /tmp/chrome-prof
-            rm -f /tmp/chrome-prof/SingletonLock /tmp/chrome-prof/SingletonCookie /tmp/chrome-prof/SingletonSocket 2>/dev/null || true
-            touch "/tmp/chrome-prof/First Run"
             # Pre-verify direct origin serves valid studio root HTML before opening Chrome (zero error-page risk)
             for _chk in 1 2 3 4 5; do
               if curl -sk --max-time 6 --resolve www.onairplayout.com:443:84.235.248.136 "${FEED_URL}" 2>/dev/null | grep -q 'id="root"'; then
@@ -175,47 +254,51 @@ jobs:
               fi
               sleep 1
             done
-            DBUS_SESSION_BUS_ADDRESS=/dev/null TZ=Asia/Karachi google-chrome \
-              --no-sandbox \
-              --disable-dev-shm-usage \
-              --default-background-color=000000ff \
-              --host-resolver-rules="MAP www.onairplayout.com 84.235.248.136,MAP onairplayout.com 84.235.248.136" \
-              --ignore-certificate-errors \
-              --mute-audio \
-              --font-render-hinting=none \
-              --force-device-scale-factor=1 \
-              --no-first-run \
-              --no-default-browser-check \
-              --disable-search-engine-choice-screen \
-              --user-data-dir=/tmp/chrome-prof \
-              --disk-cache-size=33554432 \
-              --media-cache-size=16777216 \
-              --js-flags="--max-old-space-size=512" \
-              --renderer-process-limit=2 \
-              --disable-extensions \
-              --disable-component-update \
-              --disable-features=Translate,OptimizationHints,MediaRouter,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,BackForwardCache \
-              --disable-gpu \
-              --disable-background-timer-throttling \
-              --disable-renderer-backgrounding \
-              --disable-backgrounding-occluded-windows \
-              --disable-ipc-flooding-protection \
-              --autoplay-policy=no-user-gesture-required \
-              --window-size="${TW},${TH}" \
-              --window-position=0,0 \
-              --kiosk \
-              --hide-scrollbars \
-              --disable-infobars \
-              --disable-notifications \
-              --app="${FEED_URL}&_cb=$(date +%s)" >/dev/null 2>&1 &
+
+            if [ -f /tmp/verified_gl_mode ]; then
+              local SAVED_GL
+              SAVED_GL=$(cat /tmp/verified_gl_mode 2>/dev/null || echo "swangle")
+              launch_chrome_gl_mode "$SAVED_GL" "$TW" "$TH"
+              sleep 1.8
+              focus_chrome_x11 "$TW" "$TH"
+              if [ "$FORCE_HEAL" != "force" ]; then sleep 2; fi
+            else
+              local BEST_MODE="swangle"
+              local BEST_PCT=-1
+              local CAND=""
+              local LAST_CAND=""
+              for CAND in swangle mesa_gl swangle_novsync mesa_gl_novsync; do
+                LAST_CAND="$CAND"
+                launch_chrome_gl_mode "$CAND" "$TW" "$TH"
+                sleep 1.8
+                focus_chrome_x11 "$TW" "$TH"
+                echo "[Stage-Display] Waiting 3s for ${TARGET} Output Feed & Urdu Tickers under GL mode=$CAND..."
+                sleep 3.0
+                focus_chrome_x11 "$TW" "$TH"
+                local ST_RES
+                ST_RES=$(python3 -c 'import subprocess,sys; raw=subprocess.check_output(["ffmpeg","-hide_banner","-loglevel","error","-f","x11grab","-draw_mouse","0","-framerate","20","-video_size",f"{sys.argv[1]}x{sys.argv[2]}","-i",":99.0","-t","2.4","-vf","scale=854:480,crop=600:26:20:383,format=gray","-f","rawvideo","pipe:1"],timeout=10); sz=15600; nf=len(raw)//sz; nb=sum(1 for b in raw[:sz] if b>12); diffs=[sum(abs(raw[i*sz+k]-raw[(i-1)*sz+k]) for k in range(0,sz,4))/(sz//4) for i in range(1,nf)]; mov=sum(1 for d in diffs if d>0.6); print(f"{int(mov*100/max(1,len(diffs)))}:{nb}:{nf}")' "$TW" "$TH" 2>/dev/null || echo "0:0:0")
+                local C_PCT
+                C_PCT=$(echo "$ST_RES" | cut -d: -f1)
+                echo "[Stage-SelfTest] mode=$CAND result=$ST_RES (pct=${C_PCT}%)"
+                if [ "${C_PCT:-0}" -gt "$BEST_PCT" ]; then
+                  BEST_PCT="${C_PCT:-0}"
+                  BEST_MODE="$CAND"
+                fi
+                if [ "${C_PCT:-0}" -ge 80 ]; then
+                  break
+                fi
+              done
+              echo "$BEST_MODE" > /tmp/verified_gl_mode
+              echo "[Stage-SelfTest] Locked winning 60Hz GL compositor mode=$BEST_MODE (smoothness=${BEST_PCT}%)"
+              if [ "$BEST_MODE" != "$LAST_CAND" ]; then
+                launch_chrome_gl_mode "$BEST_MODE" "$TW" "$TH"
+                sleep 1.8
+                focus_chrome_x11 "$TW" "$TH"
+                sleep 2.2
+              fi
+            fi
             echo "$TARGET" > /tmp/current_stage_res
             date +%s > /tmp/last_chrome_heal_ts
-            if [ "$FORCE_HEAL" = "force" ]; then
-              sleep 2
-            else
-              echo "Waiting 4 seconds for ${TARGET} Output Feed & Urdu Tickers to render in Pakistan Time (Asia/Karachi)..."
-              sleep 4
-            fi
           }
 
           INIT_CTRL=$(curl -s "https://www.onairplayout.com/api/stream/status?uid=${OP_UID}&worker=1" 2>/dev/null || echo '{"active":true}')
@@ -231,6 +314,11 @@ jobs:
           (
             while [ $(date +%s) -lt $STAGE_WD_END ]; do
               sleep 15
+              pgrep -x openbox >/dev/null 2>&1 || (DISPLAY=:99 openbox --sm-disable >/dev/null 2>&1 &)
+              if command -v xdotool >/dev/null 2>&1; then
+                _WD_WID=$(DISPLAY=:99 xdotool search --onlyvisible --name "." 2>/dev/null | tail -n 1)
+                [ -n "$_WD_WID" ] && DISPLAY=:99 xdotool windowactivate "$_WD_WID" windowfocus "$_WD_WID" 2>/dev/null || true
+              fi
               CUR_STG=$(cat /tmp/current_stage_res 2>/dev/null || echo "1280x720")
               W_STG=$(echo "$CUR_STG" | cut -dx -f1)
               H_STG=$(echo "$CUR_STG" | cut -dx -f2)
