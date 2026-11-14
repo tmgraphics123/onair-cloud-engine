@@ -166,6 +166,10 @@ jobs:
                 ENV_GL="1"
                 EXTRA_GL=(--ozone-platform=x11 --use-gl=angle --use-angle=gl --ignore-gpu-blocklist --disable-gpu-sandbox)
                 ;;
+              x11_glx)
+                ENV_GL="1"
+                EXTRA_GL=(--ozone-platform=x11 --use-gl=desktop --ignore-gpu-blocklist --disable-gpu-sandbox)
+                ;;
               swangle_novsync)
                 EXTRA_GL=(--ozone-platform=x11 --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader --ignore-gpu-blocklist --disable-gpu-sandbox --disable-gpu-vsync)
                 ;;
@@ -198,6 +202,7 @@ jobs:
               --media-cache-size=16777216 \
               --js-flags="--max-old-space-size=512" \
               --renderer-process-limit=2 \
+              --num-raster-threads=2 \
               --disable-extensions \
               --disable-component-update \
               --disable-features=Translate,OptimizationHints,MediaRouter,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,ThrottleDisplayNoneAndVisibilityHiddenCrossOriginIframes,BackForwardCache,UseEcoQoSForBackgroundProcess \
@@ -261,28 +266,34 @@ jobs:
 
             if [ -f /tmp/verified_gl_mode ]; then
               local SAVED_GL
-              SAVED_GL=$(cat /tmp/verified_gl_mode 2>/dev/null || echo "swangle")
+              SAVED_GL=$(cat /tmp/verified_gl_mode 2>/dev/null || echo "mesa_gl")
               launch_chrome_gl_mode "$SAVED_GL" "$TW" "$TH"
               sleep 1.8
               focus_chrome_x11 "$TW" "$TH"
               if [ "$FORCE_HEAL" != "force" ]; then sleep 2; fi
             else
-              local BEST_MODE="swangle"
+              local BEST_MODE="mesa_gl"
               local BEST_PCT=-1
               local CAND=""
               local LAST_CAND=""
-              for CAND in swangle mesa_gl swangle_novsync mesa_gl_novsync x11_soft; do
+              for CAND in mesa_gl x11_glx swangle x11_soft mesa_gl_novsync swangle_novsync; do
                 LAST_CAND="$CAND"
                 launch_chrome_gl_mode "$CAND" "$TW" "$TH"
-                sleep 1.8
+                sleep 1.6
                 focus_chrome_x11 "$TW" "$TH"
-                local WAIT_S="3.0"
-                if [ "$CAND" = "swangle" ]; then WAIT_S="4.2"; fi
-                echo "[Stage-Display] Waiting ${WAIT_S}s for ${TARGET} Output Feed & Urdu Tickers under GL mode=$CAND..."
-                sleep "$WAIT_S"
+                echo "[Stage-Display] Waiting for ${TARGET} Urdu Tickers to paint on :99.0 under GL mode=$CAND..."
+                for _rdy in 1 2 3 4 5 6 7 8 9 10; do
+                  local RDY_NB
+                  RDY_NB=$(python3 -c 'import subprocess,sys; raw=subprocess.check_output(["ffmpeg","-hide_banner","-loglevel","error","-f","x11grab","-draw_mouse","0","-framerate","5","-video_size",f"{sys.argv[1]}x{sys.argv[2]}","-i",":99.0","-frames:v","1","-vf","scale=854:480,crop=600:26:20:383,format=gray","-f","rawvideo","pipe:1"],timeout=5); print(sum(1 for b in raw if b>14))' "$TW" "$TH" 2>/dev/null || echo "0")
+                  if [ "${RDY_NB:-0}" -ge 500 ]; then
+                    break
+                  fi
+                  sleep 0.75
+                done
                 focus_chrome_x11 "$TW" "$TH"
+                sleep 0.5
                 local ST_RES
-                ST_RES=$(python3 -c 'import subprocess,sys; raw=subprocess.check_output(["ffmpeg","-hide_banner","-loglevel","error","-f","x11grab","-draw_mouse","0","-framerate","20","-video_size",f"{sys.argv[1]}x{sys.argv[2]}","-i",":99.0","-t","2.4","-vf","scale=854:480,crop=600:26:20:383,format=gray","-f","rawvideo","pipe:1"],timeout=10); sz=15600; nf=len(raw)//sz; nb=sum(1 for b in raw[:sz] if b>12); diffs=[sum(abs(raw[i*sz+k]-raw[(i-1)*sz+k]) for k in range(0,sz,4))/(sz//4) for i in range(1,nf)]; mov=sum(1 for d in diffs if d>0.6); print(f"{int(mov*100/max(1,len(diffs)))}:{nb}:{nf}")' "$TW" "$TH" 2>/dev/null || echo "0:0:0")
+                ST_RES=$(python3 -c 'import subprocess,sys; raw=subprocess.check_output(["ffmpeg","-hide_banner","-loglevel","error","-f","x11grab","-draw_mouse","0","-framerate","20","-video_size",f"{sys.argv[1]}x{sys.argv[2]}","-i",":99.0","-t","2.4","-vf","scale=854:480,crop=600:26:20:383,format=gray","-f","rawvideo","pipe:1"],timeout=10); sz=15600; nf=len(raw)//sz; nb=sum(1 for b in raw[:sz] if b>12); diffs=[sum(abs(raw[i*sz+k]-raw[(i-1)*sz+k]) for k in range(0,sz,4))/(sz//4) for i in range(1,nf)]; mov=sum(1 for d in diffs if d>0.6); ps_out=subprocess.run(["ps","-C","chrome","-o","%cpu="],capture_output=True,text=True).stdout; cpu=int(sum(float(x) for x in ps_out.split())) if ps_out.strip() else 0; print(f"{int(mov*100/max(1,len(diffs)))}:{nb}:{nf}:{cpu}")' "$TW" "$TH" 2>/dev/null || echo "0:0:0:0")
                 local C_PCT
                 C_PCT=$(echo "$ST_RES" | cut -d: -f1)
                 echo "[Stage-SelfTest] mode=$CAND result=$ST_RES (pct=${C_PCT}%)"
@@ -290,7 +301,7 @@ jobs:
                   BEST_PCT="${C_PCT:-0}"
                   BEST_MODE="$CAND"
                 fi
-                if [ "${C_PCT:-0}" -ge 80 ]; then
+                if [ "${C_PCT:-0}" -ge 85 ]; then
                   break
                 fi
                 head -n 12 /tmp/chrome_err.log 2>/dev/null || true
@@ -374,7 +385,7 @@ jobs:
               E_RES=$(echo "$S_CTRL" | jq -r '.encoderConfig.resolution // "1280x720"' 2>/dev/null || echo "1280x720")
               case "$E_RES" in
                 1920x1080) STAGE_W=1920; STAGE_H=1080; SCALE_OUT="" ;;
-                854x480)   STAGE_W=1280; STAGE_H=720;  SCALE_OUT=",scale=854:480:flags=lanczos" ;;
+                854x480)   STAGE_W=1280; STAGE_H=720;  SCALE_OUT=",scale=854:480:flags=fast_bilinear" ;;
                 *)         E_RES="1280x720"; STAGE_W=1280; STAGE_H=720; SCALE_OUT="" ;;
               esac
               ensure_stage_display "$STAGE_W" "$STAGE_H"
@@ -441,28 +452,28 @@ jobs:
                     TEE_S="${TEE_S}[f=flv:onfail=ignore]${u}"
                   fi
                 done
-                ffmpeg -nostdin -hide_banner -loglevel warning -nostats -fflags +genpts+igndts \
+                nice -n 6 ffmpeg -nostdin -hide_banner -loglevel warning -nostats -fflags +genpts+igndts \
                   -probesize 262144 -analyzeduration 300000 -thread_queue_size 1024 -f mpegts -i /tmp/muxed_av.ts \
                   -thread_queue_size 16 -f x11grab -draw_mouse 0 -framerate "$GRAB_FPS" -video_size "${STAGE_W}x${STAGE_H}" -i :99.0 \
                   -t "$REM_ENC" \
-                  -filter_complex_threads 4 \
+                  -filter_complex_threads 2 \
                   -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),realtime=limit=0.2,format=yuv420p[vid];[1:v]setpts=N/(${E_FPS}*TB),format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:format=yuv420${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
-                  -c:v libx264 -preset "$X264_PRESET" -profile:v high -bf 2 -pix_fmt yuv420p -b:v "${ACT_VB}k" -minrate "${ACT_VB}k" -maxrate "${ACT_VB}k" -bufsize "${E_BUF}k" -x264-params "nal-hrd=cbr:force-cfr=1:rc-lookahead=12" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
+                  -c:v libx264 -preset "$X264_PRESET" -profile:v high -bf 2 -pix_fmt yuv420p -b:v "${ACT_VB}k" -minrate "${ACT_VB}k" -maxrate "${ACT_VB}k" -bufsize "${E_BUF}k" -x264-params "nal-hrd=cbr:force-cfr=1:rc-lookahead=10:threads=3" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 48000 \
                   -flags +global_header -f tee "$TEE_S" &
                 M_ENC_PID=$!
               else
                 OUT_FMT="flv"
                 if echo "$ACT_RTMP" | grep -qiE "^(udp|srt)://"; then OUT_FMT="mpegts"; fi
-                ffmpeg -nostdin -hide_banner -loglevel warning -nostats -fflags +genpts+igndts \
+                nice -n 6 ffmpeg -nostdin -hide_banner -loglevel warning -nostats -fflags +genpts+igndts \
                   -probesize 262144 -analyzeduration 300000 -thread_queue_size 1024 -f mpegts -i /tmp/muxed_av.ts \
                   -thread_queue_size 16 -f x11grab -draw_mouse 0 -framerate "$GRAB_FPS" -video_size "${STAGE_W}x${STAGE_H}" -i :99.0 \
                   -t "$REM_ENC" \
-                  -filter_complex_threads 4 \
+                  -filter_complex_threads 2 \
                   -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),realtime=limit=0.2,format=yuv420p[vid];[1:v]setpts=N/(${E_FPS}*TB),format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:format=yuv420${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
-                  -c:v libx264 -preset "$X264_PRESET" -profile:v high -bf 2 -pix_fmt yuv420p -b:v "${ACT_VB}k" -minrate "${ACT_VB}k" -maxrate "${ACT_VB}k" -bufsize "${E_BUF}k" -x264-params "nal-hrd=cbr:force-cfr=1:rc-lookahead=12" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
+                  -c:v libx264 -preset "$X264_PRESET" -profile:v high -bf 2 -pix_fmt yuv420p -b:v "${ACT_VB}k" -minrate "${ACT_VB}k" -maxrate "${ACT_VB}k" -bufsize "${E_BUF}k" -x264-params "nal-hrd=cbr:force-cfr=1:rc-lookahead=10:threads=3" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 48000 \
                   -f "$OUT_FMT" "$ACT_RTMP" &
                 M_ENC_PID=$!
@@ -897,12 +908,12 @@ jobs:
               if [ "$HAS_AUD" = "0" ]; then
                 SIL_TRIM=""
                 if [ -n "${PLAY_SAMPLES:-}" ]; then SIL_TRIM="atrim=end_sample=${PLAY_SAMPLES},"; fi
-                ffmpeg -nostdin -y -hide_banner -loglevel warning -nostats \
+                nice -n 6 ffmpeg -nostdin -y -hide_banner -loglevel warning -nostats \
                   $RECON_FLAGS \
-                  -ss "$TIMECODE" $SEEK_MODE -i "$INPUT_SOURCE" \
+                  -threads 2 -ss "$TIMECODE" $SEEK_MODE -i "$INPUT_SOURCE" \
                   -f lavfi -i "anullsrc=r=48000:cl=stereo:n=1600" \
                   -map 0:v:0 -map 1:a:0 \
-                  -vf "fps=${ENC_FPS}:start_time=0,${TRIM_V}scale=${FEED_W}:${FEED_H}:force_original_aspect_ratio=decrease:flags=bicubic,pad=${FEED_W}:${FEED_H}:(ow-iw)/2:(oh-ih)/2,format=yuv420p,setpts=N/(${ENC_FPS}*TB),realtime" \
+                  -vf "fps=${ENC_FPS}:start_time=0,${TRIM_V}scale=${FEED_W}:${FEED_H}:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=${FEED_W}:${FEED_H}:(ow-iw)/2:(oh-ih)/2,format=yuv420p,setpts=N/(${ENC_FPS}*TB),realtime" \
                   -af "${SIL_TRIM}asetpts=N/SR/TB,arealtime" \
                   -shortest -max_interleave_delta 0 \
                   -c:v mpeg2video -q:v 2 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
@@ -911,11 +922,11 @@ jobs:
                   -muxdelay 0 -muxpreload 0 -flush_packets 1 \
                   -pkt_size 1316 -f mpegts /tmp/muxed_av.ts &
               else
-                ffmpeg -nostdin -y -hide_banner -loglevel warning -nostats \
+                nice -n 6 ffmpeg -nostdin -y -hide_banner -loglevel warning -nostats \
                   $RECON_FLAGS \
-                  -ss "$TIMECODE" $SEEK_MODE -i "$INPUT_SOURCE" \
+                  -threads 2 -ss "$TIMECODE" $SEEK_MODE -i "$INPUT_SOURCE" \
                   -map 0:v:0 -map 0:a:0 \
-                  -vf "fps=${ENC_FPS}:start_time=0,${TRIM_V}scale=${FEED_W}:${FEED_H}:force_original_aspect_ratio=decrease:flags=bicubic,pad=${FEED_W}:${FEED_H}:(ow-iw)/2:(oh-ih)/2,format=yuv420p,setpts=N/(${ENC_FPS}*TB),realtime" \
+                  -vf "fps=${ENC_FPS}:start_time=0,${TRIM_V}scale=${FEED_W}:${FEED_H}:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=${FEED_W}:${FEED_H}:(ow-iw)/2:(oh-ih)/2,format=yuv420p,setpts=N/(${ENC_FPS}*TB),realtime" \
                   -af "aresample=48000:async=1000:first_pts=0,${TRIM_A}asetpts=N/SR/TB,arealtime" \
                   -shortest -max_interleave_delta 0 \
                   -c:v mpeg2video -q:v 2 -g 1 -r "$ENC_FPS" -pix_fmt yuv420p \
