@@ -44,7 +44,7 @@ jobs:
             # Bypass slow/hanging azure.archive.ubuntu.com mirror immediately; use fast HTTPS kernel.org CDN mirror first
             sudo rm -rf /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
             CODENAME=$(. /etc/os-release 2>/dev/null && echo "${VERSION_CODENAME:-noble}")
-            PKGS="xvfb xauth ca-certificates"
+            PKGS="xvfb xauth openbox x11-xserver-utils ca-certificates"
             if ! command -v ffmpeg >/dev/null 2>&1; then PKGS="$PKGS ffmpeg"; fi
             printf "deb https://mirrors.edge.kernel.org/ubuntu %s main restricted universe multiverse\ndeb https://mirrors.edge.kernel.org/ubuntu %s-updates main restricted universe multiverse\ndeb https://mirrors.edge.kernel.org/ubuntu %s-security main restricted universe multiverse\n" "$CODENAME" "$CODENAME" "$CODENAME" | sudo tee /etc/apt/sources.list.d/onair-fast.list >/dev/null
             APT_OPTS="-o Acquire::Retries=1 -o Acquire::http::Timeout=8 -o Acquire::https::Timeout=8 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
@@ -54,7 +54,7 @@ jobs:
           if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v Xvfb >/dev/null 2>&1; then
             sudo rm -rf /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
             CODENAME=$(. /etc/os-release 2>/dev/null && echo "${VERSION_CODENAME:-noble}")
-            PKGS="xvfb xauth ca-certificates"
+            PKGS="xvfb xauth openbox x11-xserver-utils ca-certificates"
             if ! command -v ffmpeg >/dev/null 2>&1; then PKGS="$PKGS ffmpeg"; fi
             printf "deb http://archive.ubuntu.com/ubuntu %s main restricted universe multiverse\ndeb http://archive.ubuntu.com/ubuntu %s-updates main restricted universe multiverse\n" "$CODENAME" "$CODENAME" | sudo tee /etc/apt/sources.list.d/onair-fallback.list >/dev/null
             timeout 35 sudo DEBIAN_FRONTEND=noninteractive apt-get update -o Acquire::Retries=1 -o Acquire::http::Timeout=8 -y || true
@@ -149,6 +149,8 @@ jobs:
               fi
               echo "[Stage-Display] Zero-downtime healing Chrome renderer on existing ${TARGET} Xvfb :99 (FORCE=${FORCE_HEAL:-auto})..."
               xsetroot -display :99 -solid "#000000" 2>/dev/null || true
+              xset -display :99 s off -dpms s noblank 2>/dev/null || true
+              pgrep -x openbox >/dev/null 2>&1 || (DISPLAY=:99 openbox --sm-disable >/dev/null 2>&1 &)
               pkill -9 -f "chrome-prof" 2>/dev/null || true
               pkill -9 -f "/opt/google/chrome/chrome" 2>/dev/null || true
               sleep 0.4
@@ -159,10 +161,12 @@ jobs:
               pkill -f "Xvfb :99" 2>/dev/null || true
               sleep 1
               rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null || true
-              Xvfb :99 -screen 0 "${TW}x${TH}x24" -ac +extension GLX +render +extension MIT-SHM -noreset &
+              Xvfb :99 -screen 0 "${TW}x${TH}x24" -s 0 -dpms -ac +extension GLX +render +extension MIT-SHM -noreset &
               export DISPLAY=:99
               sleep 1.5
               xsetroot -display :99 -solid "#000000" 2>/dev/null || true
+              xset -display :99 s off -dpms s noblank 2>/dev/null || true
+              DISPLAY=:99 openbox --sm-disable >/dev/null 2>&1 &
             fi
             export DISPLAY=:99
             mkdir -p /tmp/chrome-prof
@@ -194,7 +198,8 @@ jobs:
               --renderer-process-limit=2 \
               --disable-extensions \
               --disable-component-update \
-              --disable-features=Translate,OptimizationHints,MediaRouter \
+              --disable-features=Translate,OptimizationHints,MediaRouter,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,ThrottleDisplayNoneAndVisibilityHiddenCrossOriginIframes,BackForwardCache \
+              --disable-frame-rate-limit \
               --disable-gpu \
               --num-raster-threads=4 \
               --disable-background-timer-throttling \
@@ -232,6 +237,8 @@ jobs:
           (
             while [ $(date +%s) -lt $STAGE_WD_END ]; do
               sleep 15
+              xset -display :99 s off -dpms s noblank 2>/dev/null || true
+              pgrep -x openbox >/dev/null 2>&1 || (DISPLAY=:99 openbox --sm-disable >/dev/null 2>&1 &)
               CUR_STG=$(cat /tmp/current_stage_res 2>/dev/null || echo "1280x720")
               W_STG=$(echo "$CUR_STG" | cut -dx -f1)
               H_STG=$(echo "$CUR_STG" | cut -dx -f2)
@@ -334,7 +341,7 @@ jobs:
                 sleep 0.1
               done
 
-              GRAB_FPS="$E_FPS"
+              GRAB_FPS=$(( E_FPS < 50 ? 60 : E_FPS ))
               echo "[Master-RTMP-Encoder] Starting High-Profile 24/7 RTMP/UDP stream to $ACT_RTMP @ ${E_RES} (stage ${STAGE_W}x${STAGE_H}) ${E_FPS}fps (x11grab=${GRAB_FPS}fps q=4 zero-lag) ${ACT_VB}kbps preset=${X264_PRESET} (audio ${E_AB}kbps, 48kHz zero-drift, live tickers)..."
               if echo "$ACT_RTMP" | grep -q "|"; then
                 TEE_S=""
