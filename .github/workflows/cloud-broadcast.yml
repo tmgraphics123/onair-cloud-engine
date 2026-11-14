@@ -287,7 +287,7 @@ jobs:
               E_FPS=$(echo "$S_CTRL" | jq -r '.encoderConfig.fps // 30' 2>/dev/null | awk '{print int($1)}')
               if [ -z "$E_FPS" ] || [ "$E_FPS" -lt 15 ]; then E_FPS=30; fi
               if [ "$E_FPS" -gt 60 ]; then E_FPS=60; fi
-              E_GOP=$(( E_FPS * 2 ))
+              E_GOP=$E_FPS
 
               E_VB=$(echo "$S_CTRL" | jq -r '.encoderConfig.videoBitrate // 2000' 2>/dev/null | awk '{print int($1)}')
               if [ -z "$E_VB" ] || [ "$E_VB" -lt 800 ]; then E_VB=2000; fi
