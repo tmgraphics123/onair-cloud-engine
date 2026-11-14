@@ -200,6 +200,7 @@ jobs:
               --disable-component-update \
               --disable-features=Translate,OptimizationHints,MediaRouter,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,ThrottleDisplayNoneAndVisibilityHiddenCrossOriginIframes,BackForwardCache \
               --disable-frame-rate-limit \
+              --disable-gpu-vsync \
               --disable-gpu \
               --num-raster-threads=4 \
               --disable-background-timer-throttling \
@@ -341,8 +342,8 @@ jobs:
                 sleep 0.1
               done
 
-              GRAB_FPS=$(( E_FPS < 50 ? 60 : E_FPS ))
-              echo "[Master-RTMP-Encoder] Starting High-Profile 24/7 RTMP/UDP stream to $ACT_RTMP @ ${E_RES} (stage ${STAGE_W}x${STAGE_H}) ${E_FPS}fps (x11grab=${GRAB_FPS}fps q=4 zero-lag) ${ACT_VB}kbps preset=${X264_PRESET} (audio ${E_AB}kbps, 48kHz zero-drift, live tickers)..."
+              GRAB_FPS="$E_FPS"
+              echo "[Master-RTMP-Encoder] Starting High-Profile 24/7 RTMP/UDP stream to $ACT_RTMP @ ${E_RES} (stage ${STAGE_W}x${STAGE_H}) ${E_FPS}fps (x11grab=${GRAB_FPS}fps q=4 zero-drift) ${ACT_VB}kbps preset=${X264_PRESET} (audio ${E_AB}kbps, 48kHz zero-drift, live tickers)..."
               if echo "$ACT_RTMP" | grep -q "|"; then
                 TEE_S=""
                 IFS='|' read -ra ADDR <<< "$ACT_RTMP"
@@ -356,10 +357,10 @@ jobs:
                 done
                 ffmpeg -nostdin -hide_banner -loglevel warning -nostats -fflags +genpts+igndts \
                   -probesize 262144 -analyzeduration 300000 -thread_queue_size 1024 -f mpegts -i /tmp/muxed_av.ts \
-                  -thread_queue_size 64 -f x11grab -draw_mouse 0 -framerate "$GRAB_FPS" -video_size "${STAGE_W}x${STAGE_H}" -i :99.0 \
+                  -thread_queue_size 4 -f x11grab -draw_mouse 0 -framerate "$E_FPS" -video_size "${STAGE_W}x${STAGE_H}" -i :99.0 \
                   -t "$REM_ENC" \
                   -filter_complex_threads 4 \
-                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]fps=${E_FPS}:round=near,setpts=N/(${E_FPS}*TB),format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:format=yuv420${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
+                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]setpts=N/(${E_FPS}*TB),format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:format=yuv420${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
                   -c:v libx264 -preset "$X264_PRESET" -profile:v high -bf 2 -pix_fmt yuv420p -b:v "${ACT_VB}k" -minrate "${ACT_VB}k" -maxrate "${ACT_VB}k" -bufsize "${E_BUF}k" -x264-params "nal-hrd=cbr:force-cfr=1:rc-lookahead=12" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 48000 \
@@ -370,10 +371,10 @@ jobs:
                 if echo "$ACT_RTMP" | grep -qiE "^(udp|srt)://"; then OUT_FMT="mpegts"; fi
                 ffmpeg -nostdin -hide_banner -loglevel warning -nostats -fflags +genpts+igndts \
                   -probesize 262144 -analyzeduration 300000 -thread_queue_size 1024 -f mpegts -i /tmp/muxed_av.ts \
-                  -thread_queue_size 64 -f x11grab -draw_mouse 0 -framerate "$GRAB_FPS" -video_size "${STAGE_W}x${STAGE_H}" -i :99.0 \
+                  -thread_queue_size 4 -f x11grab -draw_mouse 0 -framerate "$E_FPS" -video_size "${STAGE_W}x${STAGE_H}" -i :99.0 \
                   -t "$REM_ENC" \
                   -filter_complex_threads 4 \
-                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]fps=${E_FPS}:round=near,setpts=N/(${E_FPS}*TB),format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:format=yuv420${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
+                  -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[1:v]setpts=N/(${E_FPS}*TB),format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:format=yuv420${SCALE_OUT},format=yuv420p[outv];[0:a]asetpts=N/SR/TB[outa]" \
                   -map "[outv]" -map "[outa]" \
                   -c:v libx264 -preset "$X264_PRESET" -profile:v high -bf 2 -pix_fmt yuv420p -b:v "${ACT_VB}k" -minrate "${ACT_VB}k" -maxrate "${ACT_VB}k" -bufsize "${E_BUF}k" -x264-params "nal-hrd=cbr:force-cfr=1:rc-lookahead=12" -g "$E_GOP" -keyint_min "$E_GOP" -sc_threshold 0 \
                   -c:a aac -ac 2 -b:a "${E_AB}k" -ar 48000 \
