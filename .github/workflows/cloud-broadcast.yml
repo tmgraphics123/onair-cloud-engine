@@ -362,12 +362,12 @@ jobs:
           ) &
           STAGE_WATCHDOG_PID=$!
 
-          # 4. Install Non-Stop Monotonic CFR A/V Pump (/tmp/pump_av.py) & Launch 24/7 Non-Stop Master RTMP Encoder
-          # Keeps rawvideo + s16le flowing continuously at exact monotonic wall-clock FPS across every clip switch,
-          # eliminating clip-switch pauses, MPEG-TS corrupt packets, timestamp discontinuities, and xcbgrab spin-mode!
+          # 4. Install Lockstep Monotonic CFR A/V + X11 MIT-SHM Pump (/tmp/pump_av.py) & Launch 24/7 Non-Stop Master RTMP Encoder
+          # Captures X11 (:99.0) via MIT-SHM on the exact same monotonic tick as video + audio, completely eliminating
+          # FFmpeg xcbgrab delay<=0 burst-stalls (17-frame ticker freezes) AND clip-switch MPEG-TS pauses/discontinuities!
           cat << 'PUMP_EOF' > /tmp/pump_av.py
           #!/usr/bin/env python3
-          import os, queue, signal, sys, threading, time
+          import ctypes, os, queue, signal, sys, threading, time
 
           W = int(sys.argv[1])
           H = int(sys.argv[2])
@@ -376,19 +376,209 @@ jobs:
           IN_AUD = sys.argv[5]
           OUT_VID = sys.argv[6]
           OUT_AUD = sys.argv[7]
-          EMPTY_FLAG = sys.argv[8] if len(sys.argv) > 8 else "/tmp/playlist_is_empty"
+          OUT_GFX = sys.argv[8]
+          X_DISP = sys.argv[9] if len(sys.argv) > 9 else ":99.0"
+          EMPTY_FLAG = sys.argv[10] if len(sys.argv) > 10 else "/tmp/playlist_is_empty"
 
           Y_SZ = W * H
           UV_SZ = (W // 2) * (H // 2)
           V_BYTES = Y_SZ + 2 * UV_SZ
+          G_BYTES = W * H * 4
 
-          BLACK_FRAME = bytes([16] * Y_SZ + [128] * (2 * UV_SZ))
+          BLACK_VID = bytes([16] * Y_SZ + [128] * (2 * UV_SZ))
+          BLACK_GFX = bytes(G_BYTES)
 
           stop_ev = threading.Event()
           def _sig(*_):
               stop_ev.set()
           signal.signal(signal.SIGTERM, _sig)
           signal.signal(signal.SIGINT, _sig)
+
+          # --- X11 MIT-SHM Zero-Stall Screen Grabber (ctypes libX11 + libXext + libc) ---
+          class XShmSegmentInfo(ctypes.Structure):
+              _fields_ = [
+                  ("shmseg", ctypes.c_ulong),
+                  ("shmid", ctypes.c_int),
+                  ("shmaddr", ctypes.c_void_p),
+                  ("readOnly", ctypes.c_int),
+              ]
+
+          class XImageHeader(ctypes.Structure):
+              _fields_ = [
+                  ("width", ctypes.c_int),
+                  ("height", ctypes.c_int),
+                  ("xoffset", ctypes.c_int),
+                  ("format", ctypes.c_int),
+                  ("data", ctypes.c_void_p),
+                  ("byte_order", ctypes.c_int),
+                  ("bitmap_unit", ctypes.c_int),
+                  ("bitmap_bit_order", ctypes.c_int),
+                  ("bitmap_pad", ctypes.c_int),
+                  ("depth", ctypes.c_int),
+                  ("bytes_per_line", ctypes.c_int),
+                  ("bits_per_pixel", ctypes.c_int),
+                  ("red_mask", ctypes.c_ulong),
+                  ("green_mask", ctypes.c_ulong),
+                  ("blue_mask", ctypes.c_ulong),
+              ]
+
+          XERR_CB = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+          _x11_err_flag = False
+          def _py_xerr(_dpy, _ev):
+              global _x11_err_flag
+              _x11_err_flag = True
+              return 0
+          _c_xerr = XERR_CB(_py_xerr)
+
+          class X11ShmGrabber:
+              def __init__(self, display_name, width, height):
+                  self.display_name = display_name.encode("utf-8")
+                  self.w = width
+                  self.h = height
+                  self.dpy = None
+                  self.root = 0
+                  self.ximg = None
+                  self.shminfo = XShmSegmentInfo()
+                  self.shmaddr = None
+                  self.bpl = width * 4
+                  self.last_ok = BLACK_GFX
+
+                  self.libX11 = ctypes.CDLL("libX11.so.6")
+                  self.libXext = ctypes.CDLL("libXext.so.6")
+                  self.libc = ctypes.CDLL("libc.so.6")
+
+                  self.libX11.XSetErrorHandler.argtypes = [XERR_CB]
+                  self.libX11.XSetErrorHandler.restype = ctypes.c_void_p
+                  self.libX11.XSetErrorHandler(_c_xerr)
+
+                  self.libX11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+                  self.libX11.XOpenDisplay.restype = ctypes.c_void_p
+                  self.libX11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+                  self.libX11.XDefaultScreen.argtypes = [ctypes.c_void_p]
+                  self.libX11.XDefaultScreen.restype = ctypes.c_int
+                  self.libX11.XRootWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+                  self.libX11.XRootWindow.restype = ctypes.c_ulong
+                  self.libX11.XDefaultVisual.argtypes = [ctypes.c_void_p, ctypes.c_int]
+                  self.libX11.XDefaultVisual.restype = ctypes.c_void_p
+                  self.libX11.XDefaultDepth.argtypes = [ctypes.c_void_p, ctypes.c_int]
+                  self.libX11.XDefaultDepth.restype = ctypes.c_int
+                  self.libX11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+                  self.libX11.XDestroyImage_fn = getattr(self.libX11, "XDestroyImage", None)
+
+                  self.libXext.XShmCreateImage.argtypes = [
+                      ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_int,
+                      ctypes.c_void_p, ctypes.POINTER(XShmSegmentInfo), ctypes.c_uint, ctypes.c_uint
+                  ]
+                  self.libXext.XShmCreateImage.restype = ctypes.POINTER(XImageHeader)
+                  self.libXext.XShmAttach.argtypes = [ctypes.c_void_p, ctypes.POINTER(XShmSegmentInfo)]
+                  self.libXext.XShmAttach.restype = ctypes.c_int
+                  self.libXext.XShmDetach.argtypes = [ctypes.c_void_p, ctypes.POINTER(XShmSegmentInfo)]
+                  self.libXext.XShmGetImage.argtypes = [
+                      ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(XImageHeader),
+                      ctypes.c_int, ctypes.c_int, ctypes.c_ulong
+                  ]
+                  self.libXext.XShmGetImage.restype = ctypes.c_int
+
+                  self.libc.shmget.argtypes = [ctypes.c_int, ctypes.c_size_t, ctypes.c_int]
+                  self.libc.shmget.restype = ctypes.c_int
+                  self.libc.shmat.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+                  self.libc.shmat.restype = ctypes.c_void_p
+                  self.libc.shmdt.argtypes = [ctypes.c_void_p]
+                  self.libc.shmctl.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+
+              def close(self):
+                  if self.dpy:
+                      try:
+                          if self.shmaddr:
+                              self.libXext.XShmDetach(self.dpy, ctypes.byref(self.shminfo))
+                      except Exception:
+                          pass
+                      try:
+                          self.libX11.XCloseDisplay(self.dpy)
+                      except Exception:
+                          pass
+                  if self.shmaddr:
+                      try:
+                          self.libc.shmdt(self.shmaddr)
+                      except Exception:
+                          pass
+                  self.dpy = None
+                  self.ximg = None
+                  self.shmaddr = None
+
+              def connect(self):
+                  global _x11_err_flag
+                  self.close()
+                  _x11_err_flag = False
+                  dpy = self.libX11.XOpenDisplay(self.display_name)
+                  if not dpy and b"." in self.display_name:
+                      dpy = self.libX11.XOpenDisplay(self.display_name.split(b".")[0])
+                  if not dpy:
+                      return False
+                  scr = self.libX11.XDefaultScreen(dpy)
+                  root = self.libX11.XRootWindow(dpy, scr)
+                  vis = self.libX11.XDefaultVisual(dpy, scr)
+                  depth = self.libX11.XDefaultDepth(dpy, scr)
+                  shminfo = XShmSegmentInfo()
+                  ximg = self.libXext.XShmCreateImage(dpy, vis, depth, 2, None, ctypes.byref(shminfo), self.w, self.h)
+                  if not ximg:
+                      self.libX11.XCloseDisplay(dpy)
+                      return False
+                  bpl = ximg.contents.bytes_per_line
+                  sz = bpl * self.h
+                  shmid = self.libc.shmget(0, sz, 0o1600)
+                  if shmid < 0:
+                      self.libX11.XCloseDisplay(dpy)
+                      return False
+                  shmaddr = self.libc.shmat(shmid, None, 0)
+                  if not shmaddr or shmaddr == ctypes.c_void_p(-1).value:
+                      self.libc.shmctl(shmid, 0, None)
+                      self.libX11.XCloseDisplay(dpy)
+                      return False
+                  shminfo.shmid = shmid
+                  shminfo.shmaddr = shmaddr
+                  shminfo.readOnly = 0
+                  ximg.contents.data = shmaddr
+                  if not self.libXext.XShmAttach(dpy, ctypes.byref(shminfo)):
+                      self.libc.shmdt(shmaddr)
+                      self.libc.shmctl(shmid, 0, None)
+                      self.libX11.XCloseDisplay(dpy)
+                      return False
+                  self.libX11.XSync(dpy, 0)
+                  # Mark IPC_RMID immediately after Xvfb attaches so kernel auto-cleans SHM on exit
+                  self.libc.shmctl(shmid, 0, None)
+                  if _x11_err_flag:
+                      self.libc.shmdt(shmaddr)
+                      self.libX11.XCloseDisplay(dpy)
+                      return False
+                  self.dpy = dpy
+                  self.root = root
+                  self.ximg = ximg
+                  self.shminfo = shminfo
+                  self.shmaddr = shmaddr
+                  self.bpl = bpl
+                  return True
+
+              def grab(self):
+                  global _x11_err_flag
+                  if not self.dpy:
+                      if not self.connect():
+                          return BLACK_GFX
+                  _x11_err_flag = False
+                  ok = self.libXext.XShmGetImage(self.dpy, self.root, self.ximg, 0, 0, 0xFFFFFFFF)
+                  if not ok or _x11_err_flag:
+                      self.close()
+                      return self.last_ok
+                  if self.bpl == self.w * 4:
+                      frm = ctypes.string_at(self.shmaddr, G_BYTES)
+                  else:
+                      raw = ctypes.string_at(self.shmaddr, self.bpl * self.h)
+                      row_w = self.w * 4
+                      frm = b"".join(raw[r * self.bpl : r * self.bpl + row_w] for r in range(self.h))
+                  self.last_ok = frm
+                  return frm
+
+          x11_grabber = X11ShmGrabber(X_DISP, W, H)
 
           vq = queue.Queue(maxsize=36)
           aq = queue.Queue(maxsize=45)
@@ -473,8 +663,17 @@ jobs:
           threading.Thread(target=vid_reader, daemon=True).start()
           threading.Thread(target=aud_reader, daemon=True).start()
 
-          out_vq = queue.Queue(maxsize=8)
-          out_aq = queue.Queue(maxsize=12)
+          out_vq = queue.Queue(maxsize=24)
+          out_aq = queue.Queue(maxsize=30)
+          out_gq = queue.Queue(maxsize=24)
+          enc_active = threading.Event()
+
+          def drain_q(q):
+              while True:
+                  try:
+                      q.get_nowait()
+                  except queue.Empty:
+                      break
 
           def write_all(fd, data):
               mv = memoryview(data)
@@ -499,6 +698,10 @@ jobs:
                   except OSError:
                       time.sleep(0.05)
                       continue
+                  drain_q(out_vq)
+                  drain_q(out_aq)
+                  drain_q(out_gq)
+                  enc_active.set()
                   try:
                       while not stop_ev.is_set():
                           try:
@@ -508,6 +711,7 @@ jobs:
                           if not write_all(fd, frm):
                               break
                   finally:
+                      enc_active.clear()
                       try:
                           os.close(fd)
                       except OSError:
@@ -534,10 +738,32 @@ jobs:
                       except OSError:
                           pass
 
+          def gfx_writer():
+              while not stop_ev.is_set():
+                  try:
+                      fd = os.open(OUT_GFX, os.O_WRONLY)
+                  except OSError:
+                      time.sleep(0.05)
+                      continue
+                  try:
+                      while not stop_ev.is_set():
+                          try:
+                              frm = out_gq.get(timeout=0.1)
+                          except queue.Empty:
+                              continue
+                          if not write_all(fd, frm):
+                              break
+                  finally:
+                      try:
+                          os.close(fd)
+                      except OSError:
+                          pass
+
           threading.Thread(target=vid_writer, daemon=True).start()
           threading.Thread(target=aud_writer, daemon=True).start()
+          threading.Thread(target=gfx_writer, daemon=True).start()
 
-          last_frame = BLACK_FRAME
+          last_frame = BLACK_VID
           cur_gen = 0
           pending_v = None
           pending_a = None
@@ -622,7 +848,6 @@ jobs:
                               pending_a = None
                               break
                           else:
-                              # Audio for next clip arrived early; hold pending_a for next clip!
                               break
 
               if v_frm is not None:
@@ -630,7 +855,7 @@ jobs:
                   out_v = v_frm
               else:
                   if os.path.exists(EMPTY_FLAG):
-                      last_frame = BLACK_FRAME
+                      last_frame = BLACK_VID
                   out_v = last_frame
 
               if a_chk is not None:
@@ -643,20 +868,20 @@ jobs:
               else:
                   out_a = bytes(need_aud_bytes)
 
-              try:
-                  out_vq.put_nowait(out_v)
-              except queue.Full:
-                  pass
-              try:
-                  out_aq.put_nowait(out_a)
-              except queue.Full:
-                  pass
+              if enc_active.is_set():
+                  if out_vq.qsize() < 20 and out_aq.qsize() < 24 and out_gq.qsize() < 20:
+                      out_g = x11_grabber.grab()
+                      out_vq.put_nowait(out_v)
+                      out_aq.put_nowait(out_a)
+                      out_gq.put_nowait(out_g)
 
               tick += 1
+
+          x11_grabber.close()
           PUMP_EOF
           chmod +x /tmp/pump_av.py
-          rm -f /tmp/feeder_vid.yuv /tmp/feeder_aud.pcm /tmp/continuous_vid.yuv /tmp/continuous_aud.pcm /tmp/feeder_av.pid /tmp/feeder_av.spec /tmp/pump_av.spec /tmp/playlist_is_empty
-          mkfifo /tmp/feeder_vid.yuv /tmp/feeder_aud.pcm /tmp/continuous_vid.yuv /tmp/continuous_aud.pcm
+          rm -f /tmp/feeder_vid.yuv /tmp/feeder_aud.pcm /tmp/continuous_vid.yuv /tmp/continuous_aud.pcm /tmp/continuous_gfx.bgr0 /tmp/feeder_av.pid /tmp/feeder_av.spec /tmp/pump_av.spec /tmp/playlist_is_empty
+          mkfifo /tmp/feeder_vid.yuv /tmp/feeder_aud.pcm /tmp/continuous_vid.yuv /tmp/continuous_aud.pcm /tmp/continuous_gfx.bgr0
 
           END_TIME=$(( $(date +%s) + DURATION_SEC ))
 
@@ -718,18 +943,17 @@ jobs:
                   kill -TERM $(cat /tmp/feeder_av.pid 2>/dev/null) 2>/dev/null || true
                 fi
                 sleep 0.2
-                rm -f /tmp/feeder_vid.yuv /tmp/feeder_aud.pcm /tmp/continuous_vid.yuv /tmp/continuous_aud.pcm
-                mkfifo /tmp/feeder_vid.yuv /tmp/feeder_aud.pcm /tmp/continuous_vid.yuv /tmp/continuous_aud.pcm
+                rm -f /tmp/feeder_vid.yuv /tmp/feeder_aud.pcm /tmp/continuous_vid.yuv /tmp/continuous_aud.pcm /tmp/continuous_gfx.bgr0
+                mkfifo /tmp/feeder_vid.yuv /tmp/feeder_aud.pcm /tmp/continuous_vid.yuv /tmp/continuous_aud.pcm /tmp/continuous_gfx.bgr0
                 python3 /tmp/pump_av.py "$STAGE_W" "$STAGE_H" "$E_FPS" \
                   /tmp/feeder_vid.yuv /tmp/feeder_aud.pcm \
-                  /tmp/continuous_vid.yuv /tmp/continuous_aud.pcm \
-                  /tmp/playlist_is_empty >/dev/null 2>&1 &
+                  /tmp/continuous_vid.yuv /tmp/continuous_aud.pcm /tmp/continuous_gfx.bgr0 \
+                  :99.0 /tmp/playlist_is_empty >/dev/null 2>&1 &
                 echo "$DESIRED_SPEC" > /tmp/pump_av.spec
                 sleep 0.2
               fi
 
-              GRAB_FPS="$E_FPS"
-              echo "[Master-RTMP-Encoder] Starting High-Profile 24/7 RTMP/UDP stream to $ACT_RTMP @ ${E_RES} (stage ${STAGE_W}x${STAGE_H}) ${E_FPS}fps (Non-Stop Monotonic Pump + x11grab=${GRAB_FPS}fps CFR) ${ACT_VB}kbps preset=${X264_PRESET} (audio ${E_AB}kbps, 48kHz zero-drift, live tickers)..."
+              echo "[Master-RTMP-Encoder] Starting High-Profile 24/7 RTMP/UDP stream to $ACT_RTMP @ ${E_RES} (stage ${STAGE_W}x${STAGE_H}) ${E_FPS}fps (Lockstep Monotonic A/V + X11 MIT-SHM Pump) ${ACT_VB}kbps preset=${X264_PRESET} (audio ${E_AB}kbps, 48kHz zero-drift, 100% smooth live tickers)..."
               if echo "$ACT_RTMP" | grep -q "|"; then
                 TEE_S=""
                 IFS='|' read -ra ADDR <<< "$ACT_RTMP"
@@ -742,9 +966,9 @@ jobs:
                   fi
                 done
                 nice -n 6 ffmpeg -nostdin -hide_banner -loglevel warning -nostats \
-                  -thread_queue_size 32 -f rawvideo -pix_fmt yuv420p -s "${STAGE_W}x${STAGE_H}" -r "$E_FPS" -i /tmp/continuous_vid.yuv \
-                  -thread_queue_size 512 -f s16le -ar 48000 -ac 2 -i /tmp/continuous_aud.pcm \
-                  -thread_queue_size 16 -f x11grab -draw_mouse 0 -framerate "$GRAB_FPS" -video_size "${STAGE_W}x${STAGE_H}" -i :99.0 \
+                  -probesize 32 -analyzeduration 0 -thread_queue_size 64 -f rawvideo -pix_fmt yuv420p -s "${STAGE_W}x${STAGE_H}" -r "$E_FPS" -i /tmp/continuous_vid.yuv \
+                  -probesize 4096 -analyzeduration 0 -thread_queue_size 512 -f s16le -ar 48000 -ac 2 -i /tmp/continuous_aud.pcm \
+                  -probesize 32 -analyzeduration 0 -thread_queue_size 64 -f rawvideo -pix_fmt bgr0 -s "${STAGE_W}x${STAGE_H}" -r "$E_FPS" -i /tmp/continuous_gfx.bgr0 \
                   -t "$REM_ENC" \
                   -filter_complex_threads 2 \
                   -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[2:v]setpts=N/(${E_FPS}*TB),format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:format=yuv420${SCALE_OUT},format=yuv420p[outv];[1:a]asetpts=N/SR/TB[outa]" \
@@ -757,9 +981,9 @@ jobs:
                 OUT_FMT="flv"
                 if echo "$ACT_RTMP" | grep -qiE "^(udp|srt)://"; then OUT_FMT="mpegts"; fi
                 nice -n 6 ffmpeg -nostdin -hide_banner -loglevel warning -nostats \
-                  -thread_queue_size 32 -f rawvideo -pix_fmt yuv420p -s "${STAGE_W}x${STAGE_H}" -r "$E_FPS" -i /tmp/continuous_vid.yuv \
-                  -thread_queue_size 512 -f s16le -ar 48000 -ac 2 -i /tmp/continuous_aud.pcm \
-                  -thread_queue_size 16 -f x11grab -draw_mouse 0 -framerate "$GRAB_FPS" -video_size "${STAGE_W}x${STAGE_H}" -i :99.0 \
+                  -probesize 32 -analyzeduration 0 -thread_queue_size 64 -f rawvideo -pix_fmt yuv420p -s "${STAGE_W}x${STAGE_H}" -r "$E_FPS" -i /tmp/continuous_vid.yuv \
+                  -probesize 4096 -analyzeduration 0 -thread_queue_size 512 -f s16le -ar 48000 -ac 2 -i /tmp/continuous_aud.pcm \
+                  -probesize 32 -analyzeduration 0 -thread_queue_size 64 -f rawvideo -pix_fmt bgr0 -s "${STAGE_W}x${STAGE_H}" -r "$E_FPS" -i /tmp/continuous_gfx.bgr0 \
                   -t "$REM_ENC" \
                   -filter_complex_threads 2 \
                   -filter_complex "[0:v]setpts=N/(${E_FPS}*TB),format=yuv420p[vid];[2:v]setpts=N/(${E_FPS}*TB),format=rgba,colorkey=0x000000:0.01:0.0[gfx];[vid][gfx]overlay=0:0:eof_action=pass:repeatlast=1:format=yuv420${SCALE_OUT},format=yuv420p[outv];[1:a]asetpts=N/SR/TB[outa]" \
